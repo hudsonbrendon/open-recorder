@@ -1,5 +1,8 @@
 pub mod ffmpeg;
 pub mod input_recorder;
+pub mod input;
+#[cfg(target_os = "macos")]
+pub mod input_mac;
 pub mod source_enum;
 pub mod video_capture;
 pub mod audio_capture;
