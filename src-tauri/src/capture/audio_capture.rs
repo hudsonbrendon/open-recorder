@@ -15,6 +15,15 @@ pub struct AudioCapture {
     writer: Arc<Mutex<Option<hound::WavWriter<std::io::BufWriter<std::fs::File>>>>>,
 }
 
+// cpal::Stream is !Send on macOS (CoreAudio uses thread-local state internally),
+// but AudioCapture is always accessed while holding Mutex<Coordinator>, which
+// provides the actual synchronization. The stream is only ever played/dropped
+// from the same thread that created it (the Coordinator lock holder).
+// SAFETY: We never move the stream across thread boundaries while active;
+// the outer Mutex<Coordinator> ensures exclusive access.
+unsafe impl Send for AudioCapture {}
+unsafe impl Sync for AudioCapture {}
+
 /// List available microphone input devices as (id, display_name) pairs.
 /// The `id` is the device name, used as `device_id` in `AudioCapture::start`.
 pub fn list_microphones() -> Vec<(String, String)> {
