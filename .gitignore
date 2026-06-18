@@ -1,0 +1,10 @@
+# Logs
+*.log
+
+# OS
+.DS_Store
+
+# Build
+/target
+/dist
+/node_modules
