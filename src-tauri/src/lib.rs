@@ -2,6 +2,7 @@ pub mod model;
 pub mod capture;
 pub mod recording;
 pub mod commands;
+pub mod zoom;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
