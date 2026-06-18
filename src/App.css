@@ -58,6 +58,123 @@ h2 {
   color: inherit;
 }
 
+/* Custom dropdown (replaces native <select> for a consistent, clean look) */
+.dd {
+  position: relative;
+}
+
+.dd-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.45rem 0.7rem;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.04);
+  color: inherit;
+  font-size: 0.95rem;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.dd-btn:hover {
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.dd-btn-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dd-caret {
+  opacity: 0.6;
+  margin-left: 0.5rem;
+  font-size: 0.75rem;
+}
+
+.dd-menu {
+  position: absolute;
+  z-index: 50;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  padding: 0.25rem;
+  max-height: 300px;
+  overflow-y: auto;
+  background: #232323;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+}
+
+.dd-group-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.5;
+  padding: 0.45rem 0.6rem 0.2rem;
+}
+
+.dd-empty {
+  padding: 0.3rem 0.6rem;
+  opacity: 0.4;
+  font-size: 0.85rem;
+}
+
+.dd-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0.6rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.dd-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.dd-item.selected {
+  background: #2563eb;
+  color: #fff;
+}
+
+.dd-check {
+  width: 1em;
+  flex: none;
+  text-align: center;
+}
+
+.dd-item-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (prefers-color-scheme: light) {
+  .dd-btn {
+    border-color: #ccc;
+    background: #fff;
+  }
+  .dd-btn:hover {
+    border-color: #999;
+  }
+  .dd-menu {
+    background: #fff;
+    border-color: #ddd;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+  }
+  .dd-item:hover {
+    background: rgba(0, 0, 0, 0.06);
+  }
+}
+
 .controls {
   display: flex;
   align-items: center;
