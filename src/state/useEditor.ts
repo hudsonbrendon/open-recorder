@@ -10,13 +10,21 @@ export function useEditor(videoPath: string) {
   const saveTimer = useRef<number | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
     api
       .loadRecording(videoPath)
       .then((r) => {
-        setMetadata(r.metadata);
-        setModelState(r.zoom);
+        if (!cancelled) {
+          setMetadata(r.metadata);
+          setModelState(r.zoom);
+        }
       })
-      .catch((e) => setError(String(e)));
+      .catch((e) => {
+        if (!cancelled) setError(String(e));
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [videoPath]);
 
   const setModel = useCallback(
@@ -29,6 +37,12 @@ export function useEditor(videoPath: string) {
     },
     [videoPath],
   );
+
+  useEffect(() => {
+    return () => {
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+    };
+  }, []);
 
   return { metadata, model, setModel, selected, setSelected, error };
 }
