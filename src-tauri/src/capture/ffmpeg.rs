@@ -1,4 +1,3 @@
-// preenchido na Task 4
 use std::process::Command;
 
 pub fn ffmpeg_binary() -> String {

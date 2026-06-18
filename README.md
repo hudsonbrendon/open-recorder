@@ -16,7 +16,7 @@ An open-source, cross-platform screen recorder built with **Tauri 2** (Rust core
 - **Multiple Capture Sources:** Full screen, active window, or custom region
 - **Audio Recording:** Simultaneous microphone capture
 - **Event Logging:** Click and mouse movement timestamps (platform permissions permitting)
-- **Metadata Export:** Machine-readable JSON with recording info, source, audio config, and events
+- **Metadata Export:** Machine-readable JSON with recording info, source, and events
 - **Cross-Platform:** macOS native (Windows/Linux support planned)
 
 ## Requirements
@@ -81,7 +81,7 @@ pnpm tauri build
 2. **Audio:** Uses `cpal` (Rust) to capture microphone as WAV stream
 3. **Events:** Uses `rdev` (Rust) to log mouse and keyboard events
 4. **Encode:** Feeds video/audio to `ffmpeg` (via PATH) for H.264 + AAC mux → MP4
-5. **Metadata:** Writes JSON with recording info, source, audio config, and timestamped events
+5. **Metadata:** Writes JSON with recording info, source, and timestamped events
 6. **UI:** React/TypeScript frontend for source selection, start/stop, and file browser
 
 ## Output

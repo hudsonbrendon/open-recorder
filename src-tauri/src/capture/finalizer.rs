@@ -1,6 +1,6 @@
 use std::path::Path;
 use crate::model::metadata::{RecordingMetadata, RecordingInfo, SourceInfo, InputEvent};
-use crate::model::source::{CaptureSource, SourceKind};
+use crate::model::source::CaptureSource;
 
 pub fn build_metadata(
     source: &CaptureSource,
@@ -25,6 +25,7 @@ pub fn write_metadata(meta: &RecordingMetadata, path: &Path) -> std::io::Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::source::SourceKind;
 
     #[test]
     fn builds_metadata_from_source() {

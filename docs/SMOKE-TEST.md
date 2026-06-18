@@ -5,7 +5,7 @@ Manual verification checklist for the capture foundation (F1) on macOS. Follow e
 ## Pre-Test Setup
 
 - [ ] Clone and build: `pnpm install && pnpm tauri build`
-- [ ] Open built app in `/dist/` or run `pnpm tauri dev`
+- [ ] Open built app in `src-tauri/target/release/bundle/` or run `pnpm tauri dev`
 - [ ] System preferences: Grant **Screen Recording**, **Microphone**, and **Input Monitoring** (Accessibility) permissions to the Tauri app process
   - Settings > Privacy & Security > Screen Recording: Add the Tauri app
   - Settings > Privacy & Security > Microphone: Allow
