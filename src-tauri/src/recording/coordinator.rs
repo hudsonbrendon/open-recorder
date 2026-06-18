@@ -61,11 +61,6 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-/// Public re-export of now_ms() for use from capture::input_mac.
-pub fn now_ms_pub() -> u64 {
-    now_ms()
-}
-
 fn timestamp() -> String {
     // Simple epoch-seconds timestamp, e.g. "1750000000".
     // Using epoch avoids chrono dependency; callers can re-format if needed.

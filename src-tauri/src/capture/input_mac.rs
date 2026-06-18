@@ -31,7 +31,7 @@ pub fn spawn(recording: Arc<AtomicBool>, tx: Sender<InputMsg>) {
             move |_proxy, etype, event| {
                 if recording.load(Ordering::Relaxed) {
                     let loc = event.location();
-                    let now = crate::recording::coordinator::now_ms_pub();
+                    let now = crate::capture::input::now_ms();
                     let msg: Option<InputMsg> = match etype {
                         CGEventType::LeftMouseDown => Some((
                             loc.x as i64,
@@ -63,10 +63,15 @@ pub fn spawn(recording: Arc<AtomicBool>, tx: Sender<InputMsg>) {
 
         match tap {
             Ok(tap) => {
-                let loop_source = tap
-                    .mach_port
-                    .create_runloop_source(0)
-                    .expect("CGEventTap: failed to create runloop source");
+                let loop_source = match tap.mach_port.create_runloop_source(0) {
+                    Ok(s) => s,
+                    Err(_) => {
+                        eprintln!(
+                            "[open-recorder] CGEventTap: failed to create CFRunLoop source"
+                        );
+                        return;
+                    }
+                };
                 let current = CFRunLoop::get_current();
                 // add_source is safe in core-foundation 0.10.
                 current.add_source(&loop_source, unsafe { kCFRunLoopCommonModes });

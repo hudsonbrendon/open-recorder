@@ -9,8 +9,17 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::capture::input_recorder::InputRecorder;
+
+/// Milliseconds since UNIX_EPOCH, for use from both input.rs and input_mac.rs.
+pub(crate) fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
 
 /// (x, y, kind, button, now_ms)
 pub type InputMsg = (i64, i64, String, Option<String>, u64);
@@ -62,7 +71,7 @@ fn spawn_rdev(recording: Arc<AtomicBool>, tx: Sender<InputMsg>) {
             if !recording.load(Ordering::Relaxed) {
                 return;
             }
-            let now = crate::recording::coordinator::now_ms_pub();
+            let now = now_ms();
             match event.event_type {
                 rdev::EventType::MouseMove { x, y } => {
                     let _ = tx.send((x as i64, y as i64, "move".into(), None, now));
