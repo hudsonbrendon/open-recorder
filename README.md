@@ -6,8 +6,16 @@ An open-source, cross-platform screen recorder built with **Tauri 2** (Rust core
 
 **Foundation (F1):** Screen/window/region capture + microphone + click/mouse event logging.
 
+**F2 (In Progress):** Auto-zoom on click + integrated editor with timeline, live preview, and landscape export with zoom baked in.
+- Click detection via native macOS CGEventTap (requires Input Monitoring/Accessibility permission)
+- Auto-zoom segments generated from click events
+- Timeline UI with segment bars, click markers, and playhead
+- Live preview with CSS transform zoom + pan
+- Segment inspector for scale/timing adjustments
+- Export via ffmpeg zoompan filter with progress tracking
+- Edit persistence via REC-<timestamp>.zoom.json
+
 **Roadmap:**
-- **F2:** Auto-zoom on click + integrated mini editor
 - **F3:** Webcam overlay
 - **F4:** 9:16 export + Instagram/TikTok preview
 
@@ -30,7 +38,7 @@ An open-source, cross-platform screen recorder built with **Tauri 2** (Rust core
 The app gracefully degrades if permissions are not granted:
 - **Screen Recording:** Required to capture video. Without it, recording fails with an error.
 - **Microphone:** Required to record audio. Without it, recordings proceed with video only (no audio track).
-- **Input Monitoring** (Accessibility): Required to log mouse clicks and movements. Without it, videos and audio still record; events array remains empty (no error).
+- **Input Monitoring** (Accessibility): Required to log mouse clicks and movements AND to enable auto-zoom on click in F2. Without it, videos and audio still record; events array remains empty and F2 auto-zoom segments are not generated (manual zoom add still available).
 
 Grant permissions in **System Preferences > Privacy & Security**:
 1. Screen Recording: Add the Tauri app
@@ -160,7 +168,9 @@ ffmpeg -version
 
 ## Testing
 
-Run the **smoke test checklist** in `/docs/SMOKE-TEST.md` to verify capture, audio, metadata, and event logging on your macOS system.
+Run the smoke test checklists on your macOS system:
+- **F1 (Foundation):** [/docs/SMOKE-TEST.md](./docs/SMOKE-TEST.md) — Verify capture, audio, metadata, and event logging
+- **F2 (Auto-Zoom + Editor):** [/docs/SMOKE-TEST-F2.md](./docs/SMOKE-TEST-F2.md) — Verify editor, auto-zoom segments, timeline, live preview, export, and persistence
 
 ## License
 
@@ -173,5 +183,6 @@ Contributions are welcome. Please open an issue or PR on GitHub.
 ---
 
 **Links:**
-- [Smoke Test Checklist](./docs/SMOKE-TEST.md)
+- [F1 Smoke Test Checklist](./docs/SMOKE-TEST.md)
+- [F2 Smoke Test Checklist](./docs/SMOKE-TEST-F2.md)
 - [GitHub Issues](https://github.com/your-org/open-recorder/issues)
