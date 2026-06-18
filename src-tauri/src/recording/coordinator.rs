@@ -100,6 +100,9 @@ fn output_dir() -> PathBuf {
 
 /// Spawn the rdev listen thread (called at most once per process).
 /// Returns an RdevHandle containing the recording flag and event receiver.
+/// Currently unused: rdev's listener crashes on modern macOS (see start()).
+/// Retained for the upcoming native mouse-only event tap replacement.
+#[allow(dead_code)]
 fn spawn_rdev_listener() -> RdevHandle {
     let recording = Arc::new(AtomicBool::new(false));
     let (tx, rx) = mpsc::channel::<InputMsg>();
@@ -184,16 +187,13 @@ impl Coordinator {
 
         let input = InputRecorder::new(source.rect, start_ms);
 
-        // Spawn the rdev listener thread (only once per process).
-        if self.rdev.is_none() {
-            self.rdev = Some(spawn_rdev_listener());
-        }
-        // Enable event ingestion.
-        if let Some(ref h) = self.rdev {
-            h.recording.store(true, Ordering::Relaxed);
-            // Drain any stale messages from a previous session.
-            while h.rx.try_recv().is_ok() {}
-        }
+        // NOTE: rdev's global listener is DISABLED. On macOS 14+/26 rdev's
+        // listen thread crashes the process (it calls main-thread-only Text
+        // Services APIs from a background thread when decoding keyboard events,
+        // tripping a libdispatch queue assertion). Click capture will be
+        // reintroduced via a mouse-only native event tap. Until then `events`
+        // is empty — video + audio recording is unaffected (graceful
+        // degradation).
 
         self.active = Some(Active {
             source,
