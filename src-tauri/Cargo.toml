@@ -27,4 +27,5 @@ display-info = "0.5"
 cpal = "0.15"
 rdev = "0.5"
 thiserror = "2"
+hound = "3"
 
