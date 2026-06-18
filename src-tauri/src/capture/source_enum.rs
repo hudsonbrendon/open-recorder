@@ -1,13 +1,10 @@
 use crate::model::source::{CaptureSource, SourceKind};
+use display_info::DisplayInfo;
 
 /// A serialisable / deserialisable description of a capturable source that can
 /// be sent to (and received from) the frontend.
 ///
-/// `rect` is `[x, y, width, height]` in logical pixels.  For displays we
-/// cannot obtain dimensions through the public scap 0.0.8 API
-/// (`get_target_dimensions` lives in the private `targets` module), so the
-/// field is set to `[0, 0, 0, 0]` and can be filled in by the caller if
-/// platform-specific geometry is required later.
+/// `rect` is `[x, y, width, height]` in logical pixels.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct SourceOption {
     pub id: String,
@@ -16,30 +13,22 @@ pub struct SourceOption {
     pub rect: [i64; 4],
 }
 
-/// Return all capturable displays.
+/// Return all capturable displays with real geometry via the `display-info` crate.
 ///
-/// Returns `Err` when screen-recording permission has not been granted.
-/// Uses `scap::get_all_targets()` and filters `Target::Display` variants.
-/// Real scap 0.0.8 `Display` has fields `id: u32` and `title: String`
-/// (no `width`/`height` — those live in the private `get_target_dimensions`
-/// helper that is not re-exported from the crate root).
+/// Uses `DisplayInfo::all()` which exposes: `id: u32`, `name: String`,
+/// `x: i32`, `y: i32`, `width: u32`, `height: u32`, `scale_factor: f32`,
+/// `is_primary: bool`, and others.
 pub fn list_displays() -> Result<Vec<SourceOption>, String> {
-    if !scap::has_permission() {
-        return Err("Screen recording permission not granted".into());
-    }
-    let targets = scap::get_all_targets();
+    let displays =
+        DisplayInfo::all().map_err(|e| format!("Failed to enumerate displays: {e}"))?;
     let mut out = Vec::new();
-    for t in targets {
-        if let scap::Target::Display(d) = t {
-            out.push(SourceOption {
-                id: d.id.to_string(),
-                name: d.title.clone(),
-                kind: "display".into(),
-                // scap 0.0.8 does not expose display dimensions through its
-                // public API; rect is left as a zero rectangle.
-                rect: [0, 0, 0, 0],
-            });
-        }
+    for di in displays {
+        out.push(SourceOption {
+            id: di.id.to_string(),
+            name: format!("Display {} ({}x{})", di.id, di.width, di.height),
+            kind: "display".into(),
+            rect: [di.x as i64, di.y as i64, di.width as i64, di.height as i64],
+        });
     }
     Ok(out)
 }
@@ -49,6 +38,10 @@ pub fn list_displays() -> Result<Vec<SourceOption>, String> {
 /// Returns `Err` when screen-recording permission has not been granted.
 /// Uses `scap::get_all_targets()` and filters `Target::Window` variants.
 /// Real scap 0.0.8 `Window` has fields `id: u32` and `title: String`.
+///
+/// Note: window geometry is not available in scap 0.0.8 (`get_target_dimensions`
+/// is private). `rect` is set to `[0, 0, 0, 0]`; windows fall back to the
+/// primary-display size at capture time (handled by the capture pipeline).
 pub fn list_windows() -> Result<Vec<SourceOption>, String> {
     if !scap::has_permission() {
         return Err("Screen recording permission not granted".into());
@@ -61,6 +54,8 @@ pub fn list_windows() -> Result<Vec<SourceOption>, String> {
                 id: w.id.to_string(),
                 name: w.title.clone(),
                 kind: "window".into(),
+                // scap 0.0.8 does not expose window dimensions; falls back to
+                // primary-display size at capture time.
                 rect: [0, 0, 0, 0],
             });
         }
