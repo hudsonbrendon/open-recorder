@@ -153,6 +153,14 @@ impl Coordinator {
             return Err("recording already in progress".into());
         }
 
+        // Screen-recording permission gate. On macOS this triggers the system
+        // TCC prompt (and registers the app in the Screen Recording list) the
+        // first time it is missing, so the user can grant it and relaunch.
+        if !scap::has_permission() {
+            scap::request_permission();
+            return Err("Permissão de Gravação de Tela necessária. Abra Ajustes do Sistema → Privacidade e Segurança → Gravação de Tela, autorize o OpenRecorder e reabra o app.".into());
+        }
+
         let ts = timestamp();
         let (vname, mname) = make_filenames(&ts);
         let dir = output_dir();
