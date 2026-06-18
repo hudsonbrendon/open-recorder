@@ -52,6 +52,11 @@ pub fn mux_args(video_path: &str, audio_path: &str, out_path: &str) -> Vec<Strin
         "-i".into(), audio_path.into(),
         "-c:v".into(), "copy".into(),
         "-c:a".into(), "aac".into(),
+        // Normalize to a standard stereo layout. cpal/hound write mono WAVs
+        // tagged with an "FL"-only layout that the AAC encoder rejects
+        // ("Unsupported channel layout 1 channels (FL)"); -ac 2 re-derives a
+        // valid layout.
+        "-ac".into(), "2".into(),
         out_path.into(),
     ]
 }
