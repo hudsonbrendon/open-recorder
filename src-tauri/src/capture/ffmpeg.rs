@@ -20,6 +20,23 @@ pub fn ffmpeg_binary() -> String {
     "ffmpeg".to_string()
 }
 
+/// Resolve the ffprobe executable, mirroring `ffmpeg_binary()` candidate logic.
+pub fn ffprobe_binary() -> String {
+    const CANDIDATES: &[&str] = &[
+        "/opt/homebrew/bin/ffprobe", // Apple Silicon Homebrew
+        "/usr/local/bin/ffprobe",    // Intel Homebrew
+        "/opt/local/bin/ffprobe",    // MacPorts
+        "/usr/bin/ffprobe",          // system / Linux
+        "/bin/ffprobe",
+    ];
+    for path in CANDIDATES {
+        if std::path::Path::new(path).exists() {
+            return path.to_string();
+        }
+    }
+    "ffprobe".to_string()
+}
+
 pub fn ensure_ffmpeg() -> Result<(), String> {
     match Command::new(ffmpeg_binary()).arg("-version").output() {
         Ok(out) if out.status.success() => Ok(()),

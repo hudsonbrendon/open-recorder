@@ -1,6 +1,7 @@
 use std::process::{Command, Stdio};
+use std::fs;
 use crate::model::zoom::ZoomModel;
-use crate::capture::ffmpeg::ffmpeg_binary;
+use crate::capture::ffmpeg::{ffmpeg_binary, ffprobe_binary};
 
 /// Build the zoompan filter expressions for z (scale), x and y (pan).
 /// zoompan evaluates expressions per output frame; `on` = output frame index.
@@ -66,11 +67,7 @@ fn center_expr(model: &ZoomModel, fps: u32, is_x: bool) -> String {
     for seg in &model.segments {
         let s0 = seg.start_ms as f64 / 1000.0;
         let s1 = seg.end_ms as f64 / 1000.0;
-        let v = if is_x {
-            seg.targets[0].x
-        } else {
-            seg.targets[0].y
-        };
+        let v = seg.targets.first().map(|t| if is_x { t.x } else { t.y }).unwrap_or(0.5);
         e.push_str(&format!(
             "if(between(on/{fps_f},{s0},{s1}),{v},"
         ));
@@ -99,7 +96,7 @@ pub fn export<F: FnMut(f64)>(
     mut on_progress: F,
 ) -> Result<(), String> {
     // Probe the input dimensions so we can pass an explicit size to zoompan.
-    let probe = Command::new("ffprobe")
+    let probe = Command::new(ffprobe_binary())
         .args([
             "-v", "error",
             "-select_streams", "v:0",
@@ -125,6 +122,12 @@ pub fn export<F: FnMut(f64)>(
         "zoompan=z='{z}':x='{x}':y='{y}':d=1:fps={fps}:s={size_arg}"
     );
 
+    // Capture stderr to a temp file so we can include it in error messages
+    // without risking a deadlock between stdout progress reads and stderr draining.
+    let stderr_path = format!("{out_path}.ffmpeg-stderr.tmp");
+    let stderr_file = fs::File::create(&stderr_path)
+        .map_err(|e| format!("não foi possível criar arquivo de stderr temporário: {e}"))?;
+
     let mut child = Command::new(ffmpeg_binary())
         .args([
             "-y",
@@ -139,7 +142,7 @@ pub fn export<F: FnMut(f64)>(
             out_path,
         ])
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::from(stderr_file))
         .spawn()
         .map_err(|e| format!("falha ao iniciar ffmpeg: {e}"))?;
 
@@ -156,8 +159,20 @@ pub fn export<F: FnMut(f64)>(
     }
 
     let status = child.wait().map_err(|e| e.to_string())?;
+    // Read and clean up stderr temp file regardless of exit status.
+    let stderr_snippet = fs::read_to_string(&stderr_path).unwrap_or_default();
+    let _ = fs::remove_file(&stderr_path);
     if !status.success() {
-        return Err(format!("export ffmpeg falhou (status {status})"));
+        // Include a trailing snippet of stderr (last ~1 KB) for diagnosability.
+        let tail: String = stderr_snippet
+            .chars()
+            .rev()
+            .take(1024)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
+        return Err(format!("export ffmpeg falhou (status {status})\n{}", tail.trim()));
     }
     on_progress(1.0);
     Ok(())
@@ -232,6 +247,29 @@ mod tests {
         assert!(x.contains("0.6"), "x should contain 0.6: {x}");
         assert!(y.contains("0.4"), "y should contain 0.4: {y}");
         assert!(y.contains("0.7"), "y should contain 0.7: {y}");
+    }
+
+    #[test]
+    fn segment_with_empty_targets_does_not_panic() {
+        // A ZoomSegment deserialized from malformed frontend JSON may have targets: [].
+        // build_zoompan_expr must not panic; it should fall back to 0.5 center.
+        let m = ZoomModel {
+            version: 1,
+            segments: vec![ZoomSegment {
+                start_ms: 0,
+                end_ms: 1000,
+                ease_in_ms: 100,
+                ease_out_ms: 100,
+                scale: 2.0,
+                targets: vec![],
+            }],
+        };
+        let (z, x, y) = build_zoompan_expr(&m, 30);
+        // Should produce a valid expression string without panicking.
+        assert!(!z.is_empty(), "z expression should be non-empty");
+        // x and y should fall back to 0.5 center (no target coordinates appear).
+        assert!(x.contains("0.5"), "x should use 0.5 fallback center: {x}");
+        assert!(y.contains("0.5"), "y should use 0.5 fallback center: {y}");
     }
 
     // Smoke render test — requires ffmpeg at /opt/homebrew/bin/ffmpeg.
