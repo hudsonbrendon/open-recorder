@@ -11,5 +11,9 @@ describe("timeline mapping", () => {
   it("clamps out of range", () => {
     expect(msToX(20000, 10000, 500)).toBe(500);
     expect(xToMs(-10, 10000, 500)).toBe(0);
+    expect(xToMs(600, 10000, 500)).toBe(10000);
+    expect(msToX(-1, 10000, 500)).toBe(0);
+    expect(msToX(0, 0, 500)).toBe(0);
+    expect(xToMs(250, 10000, 0)).toBe(0);
   });
 });
