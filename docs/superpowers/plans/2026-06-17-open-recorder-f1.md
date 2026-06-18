@@ -1,2295 +1,1621 @@
-# OpenRecorder F1 (Fundação de Captura) — Implementation Plan
+# OpenRecorder F1 (Fundação de Captura) — Implementation Plan (Tauri)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Construir um gravador de tela macOS nativo que captura tela/janela/região + microfone, produzindo um `.mp4` cru e um `metadata.json` com eventos de clique/mouse.
+**Goal:** Gravador de tela cross-platform (Win/Mac/Linux) que captura tela/janela/região + microfone, produzindo um `.mp4` cru e um `metadata.json` com eventos de clique/mouse.
 
-**Architecture:** App SwiftUI nativo (macOS). ScreenCaptureKit captura frames de vídeo num `SCStream`; `AVCaptureSession` captura o microfone; ambos alimentam um único `AVAssetWriter` (uma trilha de vídeo + uma de áudio) → `.mp4`. Um `CGEventTap` registra cliques/movimento do mouse em memória, serializados em `metadata.json` no stop. Gravação não-destrutiva: a metadata é gravada mas só consumida na F2.
+**Architecture:** App Tauri 2 — core Rust + UI React/webview. `scap` captura frames de tela; os frames são encodados via `ffmpeg` (processo). `cpal` grava o microfone; `rdev` registra cliques/mouse num buffer. No stop, `ffmpeg` muxa vídeo+áudio em `.mp4` e o buffer vira `metadata.json`. Gravação não-destrutiva: a metadata é gravada mas só consumida na F2.
 
-**Tech Stack:** Swift 5.9+, SwiftUI, ScreenCaptureKit, AVFoundation, Quartz Event Services (CGEventTap). Projeto gerado por XcodeGen. Testes via XCTest (`xcodebuild test`).
+**Tech Stack:** Tauri 2, Rust (cargo), React + Vite + TypeScript (pnpm). Crates: `scap`, `cpal`, `rdev`, `serde`/`serde_json`. `ffmpeg` como processo externo (sidecar). Testes: `cargo test` (Rust) + `vitest` (UI).
 
 ## Global Constraints
 
-- Plataforma: **macOS 13.0+** apenas (ScreenCaptureKit exige 12.3+; usamos APIs de 13.0). Nativo, sem cross-platform, sem dependências externas além do XcodeGen (build-time).
-- Linguagem: **Swift**, UI em **SwiftUI** (AppKit só onde necessário).
-- Sem binários empacotados: **sem ffmpeg, sem Tauri, sem crates**. Encode via AVFoundation.
+- Plataforma: **Windows, macOS, Linux**. Crates cross-platform; smoke MVP em macOS, demais SOs quando disponíveis.
+- Stack: **Tauri 2 + Rust + React/TS**. UI no webview nativo (não Chromium embutido).
+- Sem dependência de runtime além do `ffmpeg` (sidecar/binário externo). Encode via `ffmpeg`.
 - Gravação **não-destrutiva**: vídeo cru + `metadata.json`; efeitos só no export (F2+).
 - Áudio v1: **apenas microfone**.
-- Formato `metadata.json`: **versionado** (`version: 1`); coordenadas relativas ao retângulo da fonte (origem no canto superior-esquerdo).
+- Formato `metadata.json`: **versionado** (`version: 1`); JSON em snake_case; coordenadas relativas ao retângulo da fonte (origem no canto superior-esquerdo).
 - Commits: **sem co-author/histórico do Claude**. Mensagens em inglês, formato `tipo: descrição`.
-- Bundle ID: `com.openrecorder.app`. Nome do produto: `OpenRecorder`.
+- Crate Rust: `open-recorder` (lib `open_recorder_lib`). App: `OpenRecorder`, id `com.openrecorder.app`.
+- O scaffold Tauri 2 + React-TS **já existe e compila** (commits anteriores). Não re-scaffoldar.
+
+## Estado já pronto (NÃO refazer)
+
+- `src-tauri/` (Tauri 2) + `src/` (React-TS) scaffoldados, `cargo build` e `pnpm build` passam.
+- `src-tauri/src/lib.rs` tem o comando exemplo `greet` e o `run()` builder.
+- Crate renomeado para `open_recorder_lib`; bundle id `com.openrecorder.app`.
 
 ## File Structure
 
 ```
-open-recorder/
-├── project.yml                              # XcodeGen: define app + test targets
-├── Sources/OpenRecorder/
-│   ├── App.swift                            # @main, WindowGroup
-│   ├── Info.plist                           # usage descriptions
-│   ├── OpenRecorder.entitlements            # hardened runtime, sem sandbox
-│   ├── Model/
-│   │   ├── RecordingMetadata.swift          # structs Codable do metadata.json
-│   │   ├── CaptureSource.swift              # enum/struct da fonte escolhida
-│   │   └── SourceCoordinateMapper.swift     # mapeia coords de tela → fonte
-│   ├── Capture/
-│   │   ├── StreamConfigBuilder.swift        # CaptureSource → SCStreamConfiguration
-│   │   ├── SourceEnumerator.swift           # SCShareableContent → listas
-│   │   ├── VideoWriter.swift                # wrapper AVAssetWriter
-│   │   ├── CaptureEngine.swift              # SCStream → VideoWriter
-│   │   ├── AudioRecorder.swift              # AVCaptureSession mic → VideoWriter
-│   │   ├── InputRecorder.swift              # protocolo + CGEventTap
-│   │   ├── RecordingFinalizer.swift         # escreve metadata.json
-│   │   └── RecordingCoordinator.swift       # orquestra start/stop
-│   ├── Permissions/
-│   │   └── PermissionService.swift          # checa/solicita TCC
-│   └── UI/
-│       ├── ContentView.swift                # raiz
-│       ├── SourcePickerView.swift
-│       ├── RecordingControlsView.swift
-│       ├── RecordingsListView.swift
-│       └── RecorderViewModel.swift          # @MainActor, liga UI ↔ coordinator
-├── Tests/OpenRecorderTests/
-│   ├── RecordingMetadataTests.swift
-│   ├── SourceCoordinateMapperTests.swift
-│   ├── StreamConfigBuilderTests.swift
-│   ├── InputRecorderTests.swift
-│   └── VideoWriterTests.swift
-└── docs/
-    └── SMOKE-TEST.md                        # checklist manual macOS
-```
+src-tauri/src/
+├── lib.rs                  # run(): registra módulos e invoke_handler (modificado)
+├── main.rs                 # entrypoint (já pronto)
+├── model/
+│   ├── mod.rs
+│   ├── metadata.rs         # structs serde do metadata.json
+│   ├── source.rs           # CaptureSource, SourceKind
+│   └── coords.rs           # map_to_source(rect, point) -> Option<(i64,i64)>
+├── capture/
+│   ├── mod.rs
+│   ├── ffmpeg.rs           # builder de comando ffmpeg (puro) + localizar binário
+│   ├── input_recorder.rs   # buffer de eventos (testável) + rdev (smoke)
+│   ├── source_enum.rs      # scap: lista displays/janelas (smoke)
+│   ├── video_capture.rs    # scap -> ffmpeg stdin (smoke)
+│   ├── audio_capture.rs    # cpal -> arquivo (smoke)
+│   └── finalizer.rs        # escreve metadata.json (testável)
+├── recording/
+│   ├── mod.rs
+│   └── coordinator.rs      # orquestra start/stop + estado global
+└── commands.rs             # comandos Tauri (thin wrappers)
 
-Cada arquivo tem uma responsabilidade. Lógica pura (Model/, StreamConfigBuilder, InputRecorder buffer, VideoWriter) é testável; partes ligadas a hardware/permissão (CaptureEngine, AudioRecorder, SourceEnumerator) têm smoke manual.
+src/
+├── App.tsx                 # raiz (reescrito)
+├── lib/
+│   ├── api.ts              # wrappers invoke() tipados
+│   ├── format.ts           # formatação (timer, etc.) — testável
+│   └── format.test.ts      # vitest
+├── components/
+│   ├── SourcePicker.tsx
+│   ├── MicPicker.tsx
+│   ├── RecordControls.tsx
+│   └── RecordingsList.tsx
+└── state/
+    └── useRecorder.ts      # hook de estado
+docs/SMOKE-TEST.md
+README.md
+```
 
 ---
 
-## Task 0: Pré-requisitos (executar uma vez, fora do TDD)
-
-**Não é tarefa de código** — verificação de ambiente. O executor roda isto antes da Task 1.
-
-- [ ] **Passo 1: Verificar Xcode e ferramentas**
-
-Run:
-```bash
-xcodebuild -version && swift --version
-```
-Expected: imprime versão do Xcode (15+) e do Swift (5.9+). Se faltar, instalar Xcode da App Store + `xcode-select --install`.
-
-- [ ] **Passo 2: Instalar XcodeGen**
-
-Run:
-```bash
-brew install xcodegen && xcodegen --version
-```
-Expected: imprime a versão do XcodeGen (2.x). 
-
----
-
-## Task 1: Scaffold do projeto (app lança + teste roda)
+## Task 1: Dependências Rust + esqueleto de módulos
 
 **Files:**
-- Create: `project.yml`
-- Create: `Sources/OpenRecorder/App.swift`
-- Create: `Sources/OpenRecorder/UI/ContentView.swift`
-- Create: `Sources/OpenRecorder/Info.plist`
-- Create: `Sources/OpenRecorder/OpenRecorder.entitlements`
-- Create: `Tests/OpenRecorderTests/RecordingMetadataTests.swift` (placeholder de sanidade)
+- Modify: `src-tauri/Cargo.toml`
+- Create: `src-tauri/src/model/mod.rs`, `src-tauri/src/capture/mod.rs`, `src-tauri/src/recording/mod.rs`
+- Modify: `src-tauri/src/lib.rs`
 
 **Interfaces:**
 - Consumes: nada.
-- Produces: scheme `OpenRecorder` buildável e testável via `xcodebuild`. App vazio que abre uma janela.
+- Produces: crate compila com os módulos vazios declarados e as deps adicionadas. `greet` permanece por ora.
 
-- [ ] **Step 1: Escrever o `project.yml`**
+- [ ] **Step 1: Adicionar dependências de captura ao `Cargo.toml`**
 
-```yaml
-name: OpenRecorder
-options:
-  bundleIdPrefix: com.openrecorder
-  deploymentTarget:
-    macOS: "13.0"
-  createIntermediateGroups: true
-settings:
-  base:
-    SWIFT_VERSION: "5.9"
-    MARKETING_VERSION: "0.1.0"
-    CURRENT_PROJECT_VERSION: "1"
-    PRODUCT_NAME: OpenRecorder
-    ENABLE_HARDENED_RUNTIME: YES
-    CODE_SIGN_STYLE: Automatic
-targets:
-  OpenRecorder:
-    type: application
-    platform: macOS
-    sources:
-      - Sources/OpenRecorder
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.openrecorder.app
-        INFOPLIST_FILE: Sources/OpenRecorder/Info.plist
-        CODE_SIGN_ENTITLEMENTS: Sources/OpenRecorder/OpenRecorder.entitlements
-        GENERATE_INFOPLIST_FILE: NO
-  OpenRecorderTests:
-    type: bundle.unit-test
-    platform: macOS
-    sources:
-      - Tests/OpenRecorderTests
-    dependencies:
-      - target: OpenRecorder
-    settings:
-      base:
-        BUNDLE_LOADER: "$(TEST_HOST)"
-        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/OpenRecorder.app/Contents/MacOS/OpenRecorder"
-schemes:
-  OpenRecorder:
-    build:
-      targets:
-        OpenRecorder: all
-        OpenRecorderTests: [test]
-    test:
-      targets:
-        - OpenRecorderTests
+Adicionar ao bloco `[dependencies]` (após as existentes):
+
+```toml
+scap = "0.0.8"
+cpal = "0.15"
+rdev = "0.5"
+thiserror = "2"
 ```
 
-- [ ] **Step 2: Escrever `Info.plist`**
+- [ ] **Step 2: Criar os módulos vazios**
 
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleName</key>
-    <string>OpenRecorder</string>
-    <key>CFBundleIdentifier</key>
-    <string>com.openrecorder.app</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
-    <key>CFBundleVersion</key>
-    <string>1</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>13.0</string>
-    <key>NSMicrophoneUsageDescription</key>
-    <string>OpenRecorder usa o microfone para gravar narração junto da tela.</string>
-    <key>NSHighResolutionCapable</key>
-    <true/>
-</dict>
-</plist>
+`src-tauri/src/model/mod.rs`:
+```rust
+pub mod metadata;
+pub mod source;
+pub mod coords;
 ```
 
-- [ ] **Step 3: Escrever `OpenRecorder.entitlements`**
-
-App Sandbox **desligado**: o `CGEventTap` global e a captura de tela não funcionam sob sandbox para uso geral. Hardened runtime ligado.
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>com.apple.security.app-sandbox</key>
-    <false/>
-    <key>com.apple.security.device.audio-input</key>
-    <true/>
-</dict>
-</plist>
+`src-tauri/src/capture/mod.rs`:
+```rust
+pub mod ffmpeg;
+pub mod input_recorder;
+pub mod source_enum;
+pub mod video_capture;
+pub mod audio_capture;
+pub mod finalizer;
 ```
 
-- [ ] **Step 4: Escrever `App.swift`**
-
-```swift
-import SwiftUI
-
-@main
-struct OpenRecorderApp: App {
-    var body: some Scene {
-        WindowGroup {
-            ContentView()
-                .frame(minWidth: 720, minHeight: 480)
-        }
-        .windowResizability(.contentMinSize)
-    }
-}
+`src-tauri/src/recording/mod.rs`:
+```rust
+pub mod coordinator;
 ```
 
-- [ ] **Step 5: Escrever `ContentView.swift` (placeholder)**
+Crie também arquivos vazios para cada submódulo referenciado acima (ex.: `model/metadata.rs` com `// preenchido na Task 2`), senão o crate não compila. Conteúdo mínimo placeholder por arquivo: um comentário.
 
-```swift
-import SwiftUI
+- [ ] **Step 3: Declarar os módulos em `lib.rs`**
 
-struct ContentView: View {
-    var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "record.circle")
-                .font(.system(size: 48))
-                .foregroundStyle(.red)
-            Text("OpenRecorder")
-                .font(.title.bold())
-            Text("Fundação de captura")
-                .foregroundStyle(.secondary)
-        }
-        .padding()
-    }
-}
+No topo de `src-tauri/src/lib.rs`, antes do `greet`:
+```rust
+pub mod model;
+pub mod capture;
+pub mod recording;
+pub mod commands;
 ```
 
-- [ ] **Step 6: Escrever teste de sanidade `RecordingMetadataTests.swift`**
+Criar `src-tauri/src/commands.rs` com `// comandos na Task 10`.
 
-```swift
-import XCTest
+- [ ] **Step 4: Compilar**
 
-final class RecordingMetadataTests: XCTestCase {
-    func test_sanity() {
-        XCTAssertEqual(1 + 1, 2)
-    }
-}
-```
-
-- [ ] **Step 7: Gerar o projeto**
-
-Run:
-```bash
-cd ~/Github/open-recorder && xcodegen generate
-```
-Expected: `Created project at .../OpenRecorder.xcodeproj`.
-
-- [ ] **Step 8: Buildar e rodar os testes**
-
-Run:
-```bash
-cd ~/Github/open-recorder && xcodebuild test -scheme OpenRecorder -destination 'platform=macOS' 2>&1 | tail -20
-```
-Expected: `** TEST SUCCEEDED **`, com `test_sanity` passando.
-
-- [ ] **Step 9: Ignorar artefatos gerados**
-
-Adicionar ao `.gitignore`:
-```
-/OpenRecorder.xcodeproj
-/build
-*.xcuserstate
-DerivedData/
-```
-O `.xcodeproj` é gerado pelo XcodeGen — não versionar.
-
-- [ ] **Step 10: Commit**
-
-```bash
-cd ~/Github/open-recorder && git add -A && \
-git -c user.name="Hudson Brendon" -c user.email="contato.hudsonbrendon@gmail.com" \
-commit -m "feat: scaffold macOS app with XcodeGen and test target"
-```
-
----
-
-## Task 2: Modelo de metadata (Codable)
-
-**Files:**
-- Create: `Sources/OpenRecorder/Model/RecordingMetadata.swift`
-- Test: `Tests/OpenRecorderTests/RecordingMetadataTests.swift` (substitui o placeholder)
-
-**Interfaces:**
-- Consumes: nada.
-- Produces:
-  - `struct RecordingMetadata: Codable, Equatable` com `version: Int`, `recording: RecordingInfo`, `source: SourceInfo`, `events: [InputEvent]`.
-  - `struct RecordingInfo: Codable, Equatable` com `width: Int`, `height: Int`, `fps: Int`, `durationMs: Int`.
-  - `struct SourceInfo: Codable, Equatable` com `type: String`, `id: String`, `rect: [Int]` (exatamente 4: x,y,w,h).
-  - `struct InputEvent: Codable, Equatable` com `tMs: Int`, `type: String`, `x: Int`, `y: Int`, `button: String?`.
-  - JSON usa snake_case (`duration_ms`, `t_ms`) via `CodingKeys`.
-
-- [ ] **Step 1: Escrever o teste de round-trip falhando**
-
-```swift
-import XCTest
-@testable import OpenRecorder
-
-final class RecordingMetadataTests: XCTestCase {
-    func test_encodesToSnakeCaseJSON() throws {
-        let meta = RecordingMetadata(
-            version: 1,
-            recording: RecordingInfo(width: 2560, height: 1440, fps: 30, durationMs: 18450),
-            source: SourceInfo(type: "display", id: "1", rect: [0, 0, 2560, 1440]),
-            events: [
-                InputEvent(tMs: 1200, type: "click", x: 840, y: 410, button: "left"),
-                InputEvent(tMs: 1200, type: "move", x: 840, y: 410, button: nil),
-            ]
-        )
-        let encoder = JSONEncoder()
-        let data = try encoder.encode(meta)
-        let json = String(data: data, encoding: .utf8)!
-        XCTAssertTrue(json.contains("\"duration_ms\":18450"))
-        XCTAssertTrue(json.contains("\"t_ms\":1200"))
-        XCTAssertTrue(json.contains("\"version\":1"))
-    }
-
-    func test_roundTripPreservesValues() throws {
-        let meta = RecordingMetadata(
-            version: 1,
-            recording: RecordingInfo(width: 100, height: 200, fps: 60, durationMs: 5000),
-            source: SourceInfo(type: "window", id: "abc", rect: [10, 20, 30, 40]),
-            events: [InputEvent(tMs: 0, type: "click", x: 1, y: 2, button: "right")]
-        )
-        let data = try JSONEncoder().encode(meta)
-        let decoded = try JSONDecoder().decode(RecordingMetadata.self, from: data)
-        XCTAssertEqual(decoded, meta)
-    }
-}
-```
-
-- [ ] **Step 2: Rodar o teste pra ver falhar**
-
-Run:
-```bash
-cd ~/Github/open-recorder && xcodebuild test -scheme OpenRecorder -destination 'platform=macOS' 2>&1 | tail -20
-```
-Expected: FAIL — `cannot find 'RecordingMetadata' in scope`.
-
-- [ ] **Step 3: Implementar o modelo**
-
-```swift
-import Foundation
-
-struct RecordingMetadata: Codable, Equatable {
-    var version: Int
-    var recording: RecordingInfo
-    var source: SourceInfo
-    var events: [InputEvent]
-}
-
-struct RecordingInfo: Codable, Equatable {
-    var width: Int
-    var height: Int
-    var fps: Int
-    var durationMs: Int
-
-    enum CodingKeys: String, CodingKey {
-        case width, height, fps
-        case durationMs = "duration_ms"
-    }
-}
-
-struct SourceInfo: Codable, Equatable {
-    var type: String
-    var id: String
-    var rect: [Int]
-}
-
-struct InputEvent: Codable, Equatable {
-    var tMs: Int
-    var type: String
-    var x: Int
-    var y: Int
-    var button: String?
-
-    enum CodingKeys: String, CodingKey {
-        case tMs = "t_ms"
-        case type, x, y, button
-    }
-}
-```
-
-- [ ] **Step 4: Rodar o teste pra ver passar**
-
-Run:
-```bash
-cd ~/Github/open-recorder && xcodegen generate && xcodebuild test -scheme OpenRecorder -destination 'platform=macOS' 2>&1 | tail -20
-```
-Expected: `** TEST SUCCEEDED **`. (Roda `xcodegen generate` sempre que adicionar/remover arquivos.)
+Run: `cd src-tauri && cargo build 2>&1 | tail -5`
+Expected: `Finished` sem erros (baixa e compila scap/cpal/rdev na 1ª vez — pode demorar).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 cd ~/Github/open-recorder && git add -A && \
 git -c user.name="Hudson Brendon" -c user.email="contato.hudsonbrendon@gmail.com" \
-commit -m "feat: add versioned RecordingMetadata model with snake_case JSON"
+commit -m "feat: add capture crates and module skeleton"
 ```
 
 ---
 
-## Task 3: Mapeamento de coordenadas (tela → fonte)
-
-Eventos do `CGEventTap` chegam em coordenadas globais da tela (origem no canto **inferior**-esquerdo no sistema do Quartz para alguns APIs, mas `CGEvent.location` usa origem no canto **superior**-esquerdo do display principal). Precisamos converter para coordenadas relativas ao retângulo da fonte capturada, com origem no canto superior-esquerdo da fonte. Pontos fora da fonte são descartados.
+## Task 2: Modelo de metadata (serde, snake_case)
 
 **Files:**
-- Create: `Sources/OpenRecorder/Model/CaptureSource.swift`
-- Create: `Sources/OpenRecorder/Model/SourceCoordinateMapper.swift`
-- Test: `Tests/OpenRecorderTests/SourceCoordinateMapperTests.swift`
+- Modify: `src-tauri/src/model/metadata.rs`
 
 **Interfaces:**
 - Consumes: nada.
 - Produces:
-  - `enum CaptureSourceKind: String { case display, window, region }`
-  - `struct CaptureSource: Equatable` com `kind: CaptureSourceKind`, `id: String`, `rect: CGRect` (em coordenadas globais de tela, origem superior-esquerda), `displayID: CGDirectDisplayID`.
-  - `struct SourceCoordinateMapper` com `init(sourceRect: CGRect)` e `func map(globalPoint: CGPoint) -> CGPoint?` retornando ponto relativo (origem superior-esquerda da fonte) ou `nil` se fora.
+  - `RecordingMetadata { version: u32, recording: RecordingInfo, source: SourceInfo, events: Vec<InputEvent> }`
+  - `RecordingInfo { width: u32, height: u32, fps: u32, duration_ms: u64 }`
+  - `SourceInfo { kind: String, id: String, rect: [i64; 4] }` (serializa campo `kind` como `"type"`)
+  - `InputEvent { t_ms: u64, kind: String, x: i64, y: i64, button: Option<String> }` (campo `kind` serializa como `"type"`)
+  - Todos `#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]`.
 
-- [ ] **Step 1: Escrever os testes falhando**
+- [ ] **Step 1: Escrever o teste de round-trip falhando**
 
-```swift
-import XCTest
-import CoreGraphics
-@testable import OpenRecorder
+Em `src-tauri/src/model/metadata.rs`:
+```rust
+use serde::{Serialize, Deserialize};
 
-final class SourceCoordinateMapperTests: XCTestCase {
-    func test_mapsPointInsideToRelative() {
-        let mapper = SourceCoordinateMapper(sourceRect: CGRect(x: 100, y: 50, width: 800, height: 600))
-        let result = mapper.map(globalPoint: CGPoint(x: 150, y: 90))
-        XCTAssertEqual(result, CGPoint(x: 50, y: 40))
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serializes_snake_case_with_type_field() {
+        let meta = RecordingMetadata {
+            version: 1,
+            recording: RecordingInfo { width: 2560, height: 1440, fps: 30, duration_ms: 18450 },
+            source: SourceInfo { kind: "display".into(), id: "1".into(), rect: [0, 0, 2560, 1440] },
+            events: vec![
+                InputEvent { t_ms: 1200, kind: "click".into(), x: 840, y: 410, button: Some("left".into()) },
+                InputEvent { t_ms: 1200, kind: "move".into(), x: 840, y: 410, button: None },
+            ],
+        };
+        let json = serde_json::to_string(&meta).unwrap();
+        assert!(json.contains("\"duration_ms\":18450"), "{json}");
+        assert!(json.contains("\"t_ms\":1200"), "{json}");
+        assert!(json.contains("\"type\":\"display\""), "{json}");
+        assert!(json.contains("\"type\":\"click\""), "{json}");
     }
 
-    func test_mapsTopLeftCornerToZero() {
-        let mapper = SourceCoordinateMapper(sourceRect: CGRect(x: 100, y: 50, width: 800, height: 600))
-        XCTAssertEqual(mapper.map(globalPoint: CGPoint(x: 100, y: 50)), CGPoint(x: 0, y: 0))
-    }
-
-    func test_returnsNilWhenOutsideLeft() {
-        let mapper = SourceCoordinateMapper(sourceRect: CGRect(x: 100, y: 50, width: 800, height: 600))
-        XCTAssertNil(mapper.map(globalPoint: CGPoint(x: 99, y: 90)))
-    }
-
-    func test_returnsNilWhenOutsideBottom() {
-        let mapper = SourceCoordinateMapper(sourceRect: CGRect(x: 100, y: 50, width: 800, height: 600))
-        XCTAssertNil(mapper.map(globalPoint: CGPoint(x: 150, y: 651)))
+    #[test]
+    fn round_trip_preserves_values() {
+        let meta = RecordingMetadata {
+            version: 1,
+            recording: RecordingInfo { width: 100, height: 200, fps: 60, duration_ms: 5000 },
+            source: SourceInfo { kind: "window".into(), id: "abc".into(), rect: [10, 20, 30, 40] },
+            events: vec![InputEvent { t_ms: 0, kind: "click".into(), x: 1, y: 2, button: Some("right".into()) }],
+        };
+        let json = serde_json::to_string(&meta).unwrap();
+        let back: RecordingMetadata = serde_json::from_str(&json).unwrap();
+        assert_eq!(meta, back);
     }
 }
 ```
 
 - [ ] **Step 2: Rodar pra ver falhar**
 
-Run:
+Run: `cd src-tauri && cargo test metadata 2>&1 | tail -15`
+Expected: erro de compilação — `cannot find type RecordingMetadata`.
+
+- [ ] **Step 3: Implementar os structs**
+
+Acima do bloco `#[cfg(test)]`:
+```rust
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct RecordingMetadata {
+    pub version: u32,
+    pub recording: RecordingInfo,
+    pub source: SourceInfo,
+    pub events: Vec<InputEvent>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct RecordingInfo {
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+    pub duration_ms: u64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct SourceInfo {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub id: String,
+    pub rect: [i64; 4],
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct InputEvent {
+    pub t_ms: u64,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub x: i64,
+    pub y: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub button: Option<String>,
+}
+```
+
+- [ ] **Step 4: Rodar pra ver passar**
+
+Run: `cd src-tauri && cargo test metadata 2>&1 | tail -10`
+Expected: `test result: ok. 2 passed`.
+
+- [ ] **Step 5: Commit**
+
 ```bash
-cd ~/Github/open-recorder && xcodegen generate && xcodebuild test -scheme OpenRecorder -destination 'platform=macOS' 2>&1 | tail -20
-```
-Expected: FAIL — `cannot find 'SourceCoordinateMapper' in scope`.
-
-- [ ] **Step 3: Implementar `CaptureSource`**
-
-```swift
-import CoreGraphics
-
-enum CaptureSourceKind: String, Equatable {
-    case display
-    case window
-    case region
-}
-
-struct CaptureSource: Equatable {
-    var kind: CaptureSourceKind
-    var id: String
-    var rect: CGRect           // global, origem superior-esquerda
-    var displayID: CGDirectDisplayID
-}
+cd ~/Github/open-recorder && git add -A && \
+git -c user.name="Hudson Brendon" -c user.email="contato.hudsonbrendon@gmail.com" \
+commit -m "feat: add versioned RecordingMetadata serde model"
 ```
 
-- [ ] **Step 4: Implementar `SourceCoordinateMapper`**
+---
 
-```swift
-import CoreGraphics
+## Task 3: CaptureSource + mapeamento de coordenadas
 
-struct SourceCoordinateMapper {
-    let sourceRect: CGRect
+**Files:**
+- Modify: `src-tauri/src/model/source.rs`, `src-tauri/src/model/coords.rs`
 
-    init(sourceRect: CGRect) {
-        self.sourceRect = sourceRect
+**Interfaces:**
+- Consumes: nada.
+- Produces:
+  - `enum SourceKind { Display, Window, Region }` com `as_str(&self) -> &'static str` (`"display"|"window"|"region"`).
+  - `struct CaptureSource { kind: SourceKind, id: String, rect: [i64; 4] }` (rect = x,y,w,h globais).
+  - `fn map_to_source(rect: [i64; 4], x: i64, y: i64) -> Option<(i64, i64)>` em `coords.rs` — relativo à origem da fonte; `None` se fora.
+
+- [ ] **Step 1: Escrever testes de coords falhando**
+
+Em `src-tauri/src/model/coords.rs`:
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_inside_point_to_relative() {
+        assert_eq!(map_to_source([100, 50, 800, 600], 150, 90), Some((50, 40)));
     }
 
-    /// Converte um ponto global (origem superior-esquerda do display principal)
-    /// para coordenadas relativas à fonte. Retorna nil se cair fora da fonte.
-    func map(globalPoint: CGPoint) -> CGPoint? {
-        let relX = globalPoint.x - sourceRect.origin.x
-        let relY = globalPoint.y - sourceRect.origin.y
-        guard relX >= 0, relY >= 0, relX <= sourceRect.width, relY <= sourceRect.height else {
-            return nil
+    #[test]
+    fn maps_top_left_to_zero() {
+        assert_eq!(map_to_source([100, 50, 800, 600], 100, 50), Some((0, 0)));
+    }
+
+    #[test]
+    fn returns_none_outside_left() {
+        assert_eq!(map_to_source([100, 50, 800, 600], 99, 90), None);
+    }
+
+    #[test]
+    fn returns_none_outside_bottom() {
+        assert_eq!(map_to_source([100, 50, 800, 600], 150, 651), None);
+    }
+}
+```
+
+- [ ] **Step 2: Rodar pra ver falhar**
+
+Run: `cd src-tauri && cargo test coords 2>&1 | tail -10`
+Expected: `cannot find function map_to_source`.
+
+- [ ] **Step 3: Implementar `coords.rs` e `source.rs`**
+
+`src-tauri/src/model/coords.rs` (acima do teste):
+```rust
+/// Converte um ponto global para coordenadas relativas à fonte (origem
+/// superior-esquerda). `rect` = [x, y, w, h]. None se cair fora.
+pub fn map_to_source(rect: [i64; 4], x: i64, y: i64) -> Option<(i64, i64)> {
+    let [rx, ry, rw, rh] = rect;
+    let rel_x = x - rx;
+    let rel_y = y - ry;
+    if rel_x < 0 || rel_y < 0 || rel_x > rw || rel_y > rh {
+        return None;
+    }
+    Some((rel_x, rel_y))
+}
+```
+
+`src-tauri/src/model/source.rs`:
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceKind {
+    Display,
+    Window,
+    Region,
+}
+
+impl SourceKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SourceKind::Display => "display",
+            SourceKind::Window => "window",
+            SourceKind::Region => "region",
         }
-        return CGPoint(x: relX, y: relY)
     }
 }
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CaptureSource {
+    pub kind: SourceKind,
+    pub id: String,
+    pub rect: [i64; 4],
+}
+```
+
+- [ ] **Step 4: Rodar pra ver passar**
+
+Run: `cd src-tauri && cargo test coords 2>&1 | tail -10`
+Expected: `test result: ok. 4 passed`.
+
+- [ ] **Step 5: Commit**
+
+```bash
+cd ~/Github/open-recorder && git add -A && \
+git -c user.name="Hudson Brendon" -c user.email="contato.hudsonbrendon@gmail.com" \
+commit -m "feat: add CaptureSource and coordinate mapping"
+```
+
+---
+
+## Task 4: Builder de comando ffmpeg (puro)
+
+Lógica pura que monta os argumentos do ffmpeg para (a) encodar frames crus vindos do stdin e (b) muxar vídeo+áudio no `.mp4` final. Sem rodar ffmpeg.
+
+**Files:**
+- Modify: `src-tauri/src/capture/ffmpeg.rs`
+
+**Interfaces:**
+- Consumes: nada.
+- Produces:
+  - `fn encode_args(width: u32, height: u32, fps: u32, out_path: &str) -> Vec<String>` — args para `ffmpeg` lendo BGRA cru do stdin (`-f rawvideo -pix_fmt bgra -s WxH -r fps -i - ... out_path`).
+  - `fn mux_args(video_path: &str, audio_path: &str, out_path: &str) -> Vec<String>` — junta vídeo + áudio (`-i video -i audio -c copy ... out_path`).
+  - `fn ffmpeg_binary() -> String` — retorna `"ffmpeg"` (PATH) por ora; sidecar configurado na Task 11.
+
+- [ ] **Step 1: Escrever testes falhando**
+
+Em `src-tauri/src/capture/ffmpeg.rs`:
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encode_args_have_rawvideo_input_and_size() {
+        let a = encode_args(1920, 1080, 30, "/tmp/v.mp4");
+        assert!(a.windows(2).any(|w| w[0] == "-f" && w[1] == "rawvideo"), "{a:?}");
+        assert!(a.windows(2).any(|w| w[0] == "-pix_fmt" && w[1] == "bgra"), "{a:?}");
+        assert!(a.windows(2).any(|w| w[0] == "-s" && w[1] == "1920x1080"), "{a:?}");
+        assert!(a.windows(2).any(|w| w[0] == "-r" && w[1] == "30"), "{a:?}");
+        assert!(a.windows(2).any(|w| w[0] == "-i" && w[1] == "-"), "{a:?}");
+        assert_eq!(a.last().unwrap(), "/tmp/v.mp4");
+    }
+
+    #[test]
+    fn mux_args_have_two_inputs_and_output() {
+        let a = mux_args("/tmp/v.mp4", "/tmp/a.wav", "/tmp/out.mp4");
+        let inputs: Vec<_> = a.windows(2).filter(|w| w[0] == "-i").map(|w| w[1].clone()).collect();
+        assert_eq!(inputs, vec!["/tmp/v.mp4", "/tmp/a.wav"]);
+        assert_eq!(a.last().unwrap(), "/tmp/out.mp4");
+    }
+}
+```
+
+- [ ] **Step 2: Rodar pra ver falhar**
+
+Run: `cd src-tauri && cargo test ffmpeg 2>&1 | tail -10`
+Expected: `cannot find function encode_args`.
+
+- [ ] **Step 3: Implementar**
+
+Acima do teste:
+```rust
+pub fn ffmpeg_binary() -> String {
+    "ffmpeg".to_string()
+}
+
+/// Args para encodar BGRA cru lido do stdin em H.264 mp4.
+pub fn encode_args(width: u32, height: u32, fps: u32, out_path: &str) -> Vec<String> {
+    vec![
+        "-y".into(),
+        "-f".into(), "rawvideo".into(),
+        "-pix_fmt".into(), "bgra".into(),
+        "-s".into(), format!("{width}x{height}"),
+        "-r".into(), fps.to_string(),
+        "-i".into(), "-".into(),
+        "-c:v".into(), "libx264".into(),
+        "-preset".into(), "ultrafast".into(),
+        "-pix_fmt".into(), "yuv420p".into(),
+        out_path.into(),
+    ]
+}
+
+/// Args para muxar vídeo + áudio (sem re-encode de vídeo).
+pub fn mux_args(video_path: &str, audio_path: &str, out_path: &str) -> Vec<String> {
+    vec![
+        "-y".into(),
+        "-i".into(), video_path.into(),
+        "-i".into(), audio_path.into(),
+        "-c:v".into(), "copy".into(),
+        "-c:a".into(), "aac".into(),
+        out_path.into(),
+    ]
+}
+```
+
+- [ ] **Step 4: Rodar pra ver passar**
+
+Run: `cd src-tauri && cargo test ffmpeg 2>&1 | tail -10`
+Expected: `test result: ok. 2 passed`.
+
+- [ ] **Step 5: Commit**
+
+```bash
+cd ~/Github/open-recorder && git add -A && \
+git -c user.name="Hudson Brendon" -c user.email="contato.hudsonbrendon@gmail.com" \
+commit -m "feat: add ffmpeg encode/mux argument builders"
+```
+
+---
+
+## Task 5: Input recorder (buffer testável + rdev real)
+
+Captura via `rdev` fica atrás de um método `ingest` testável com eventos sintéticos. A thread `rdev` real só é exercida no smoke.
+
+**Files:**
+- Modify: `src-tauri/src/capture/input_recorder.rs`
+
+**Interfaces:**
+- Consumes: `map_to_source` (Task 3), `InputEvent` (Task 2).
+- Produces:
+  - `struct InputRecorder { rect: [i64;4], start_ms: u64, events: Vec<InputEvent> }`
+  - `fn new(rect: [i64;4], start_ms: u64) -> Self`
+  - `fn ingest(&mut self, x: i64, y: i64, kind: &str, button: Option<String>, now_ms: u64)` — aplica o mapper, calcula `t_ms = now_ms - start_ms`, descarta se fora.
+  - `fn take_events(self) -> Vec<InputEvent>`
+
+- [ ] **Step 1: Escrever testes falhando**
+
+Em `src-tauri/src/capture/input_recorder.rs`:
+```rust
+use crate::model::coords::map_to_source;
+use crate::model::metadata::InputEvent;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ingest_stores_mapped_event_with_relative_time() {
+        let mut rec = InputRecorder::new([100, 50, 800, 600], 1000);
+        rec.ingest(150, 90, "click", Some("left".into()), 1200);
+        let ev = rec.take_events();
+        assert_eq!(ev.len(), 1);
+        assert_eq!(ev[0].t_ms, 200);
+        assert_eq!((ev[0].x, ev[0].y), (50, 40));
+        assert_eq!(ev[0].kind, "click");
+        assert_eq!(ev[0].button.as_deref(), Some("left"));
+    }
+
+    #[test]
+    fn ingest_drops_events_outside_source() {
+        let mut rec = InputRecorder::new([0, 0, 100, 100], 0);
+        rec.ingest(500, 500, "move", None, 50);
+        assert_eq!(rec.take_events().len(), 0);
+    }
+}
+```
+
+- [ ] **Step 2: Rodar pra ver falhar**
+
+Run: `cd src-tauri && cargo test input_recorder 2>&1 | tail -10`
+Expected: `cannot find ... InputRecorder`.
+
+- [ ] **Step 3: Implementar**
+
+Acima do teste:
+```rust
+pub struct InputRecorder {
+    rect: [i64; 4],
+    start_ms: u64,
+    events: Vec<InputEvent>,
+}
+
+impl InputRecorder {
+    pub fn new(rect: [i64; 4], start_ms: u64) -> Self {
+        Self { rect, start_ms, events: Vec::new() }
+    }
+
+    pub fn ingest(&mut self, x: i64, y: i64, kind: &str, button: Option<String>, now_ms: u64) {
+        if let Some((rx, ry)) = map_to_source(self.rect, x, y) {
+            let t_ms = now_ms.saturating_sub(self.start_ms);
+            self.events.push(InputEvent {
+                t_ms,
+                kind: kind.to_string(),
+                x: rx,
+                y: ry,
+                button,
+            });
+        }
+    }
+
+    pub fn take_events(self) -> Vec<InputEvent> {
+        self.events
+    }
+}
+```
+
+- [ ] **Step 4: Rodar pra ver passar**
+
+Run: `cd src-tauri && cargo test input_recorder 2>&1 | tail -10`
+Expected: `test result: ok. 2 passed`.
+
+- [ ] **Step 5: Commit**
+
+```bash
+cd ~/Github/open-recorder && git add -A && \
+git -c user.name="Hudson Brendon" -c user.email="contato.hudsonbrendon@gmail.com" \
+commit -m "feat: add InputRecorder buffer with testable ingest"
+```
+
+---
+
+## Task 6: Finalizer (escreve metadata.json) + nomes de arquivo
+
+**Files:**
+- Modify: `src-tauri/src/capture/finalizer.rs`
+- Modify: `src-tauri/src/recording/coordinator.rs` (só o helper de nomes nesta task)
+
+**Interfaces:**
+- Consumes: `RecordingMetadata` etc. (Task 2), `CaptureSource`/`SourceKind` (Task 3).
+- Produces:
+  - `fn build_metadata(source: &CaptureSource, fps: u32, duration_ms: u64, events: Vec<InputEvent>) -> RecordingMetadata`
+  - `fn write_metadata(meta: &RecordingMetadata, path: &Path) -> std::io::Result<()>` (JSON pretty).
+  - Em `coordinator.rs`: `fn make_filenames(timestamp: &str) -> (String, String)` → `("REC-<ts>.mp4", "REC-<ts>.metadata.json")`.
+
+- [ ] **Step 1: Escrever testes falhando**
+
+Em `src-tauri/src/capture/finalizer.rs`:
+```rust
+use std::path::Path;
+use crate::model::metadata::{RecordingMetadata, RecordingInfo, SourceInfo, InputEvent};
+use crate::model::source::{CaptureSource, SourceKind};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builds_metadata_from_source() {
+        let src = CaptureSource { kind: SourceKind::Display, id: "1".into(), rect: [0, 0, 1920, 1080] };
+        let meta = build_metadata(&src, 30, 5000, vec![]);
+        assert_eq!(meta.version, 1);
+        assert_eq!(meta.recording, RecordingInfo { width: 1920, height: 1080, fps: 30, duration_ms: 5000 });
+        assert_eq!(meta.source, SourceInfo { kind: "display".into(), id: "1".into(), rect: [0, 0, 1920, 1080] });
+    }
+
+    #[test]
+    fn writes_json_file_round_trip() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("meta-{}.json", std::process::id()));
+        let src = CaptureSource { kind: SourceKind::Window, id: "7".into(), rect: [5, 6, 100, 200] };
+        let meta = build_metadata(&src, 60, 1234, vec![
+            InputEvent { t_ms: 10, kind: "click".into(), x: 1, y: 2, button: Some("left".into()) },
+        ]);
+        write_metadata(&meta, &path).unwrap();
+        let txt = std::fs::read_to_string(&path).unwrap();
+        let back: RecordingMetadata = serde_json::from_str(&txt).unwrap();
+        assert_eq!(back, meta);
+        let _ = std::fs::remove_file(&path);
+    }
+}
+```
+
+E em `src-tauri/src/recording/coordinator.rs`:
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn filenames_share_timestamp() {
+        let (v, m) = make_filenames("20260618-153000");
+        assert_eq!(v, "REC-20260618-153000.mp4");
+        assert_eq!(m, "REC-20260618-153000.metadata.json");
+    }
+}
+```
+
+- [ ] **Step 2: Rodar pra ver falhar**
+
+Run: `cd src-tauri && cargo test finalizer 2>&1 | tail -10 && cargo test coordinator 2>&1 | tail -10`
+Expected: erros `cannot find function build_metadata` / `make_filenames`.
+
+- [ ] **Step 3: Implementar**
+
+`finalizer.rs` (acima do teste):
+```rust
+pub fn build_metadata(
+    source: &CaptureSource,
+    fps: u32,
+    duration_ms: u64,
+    events: Vec<InputEvent>,
+) -> RecordingMetadata {
+    let [x, y, w, h] = source.rect;
+    RecordingMetadata {
+        version: 1,
+        recording: RecordingInfo { width: w as u32, height: h as u32, fps, duration_ms },
+        source: SourceInfo { kind: source.kind.as_str().to_string(), id: source.id.clone(), rect: [x, y, w, h] },
+        events,
+    }
+}
+
+pub fn write_metadata(meta: &RecordingMetadata, path: &Path) -> std::io::Result<()> {
+    let json = serde_json::to_string_pretty(meta).expect("serialize metadata");
+    std::fs::write(path, json)
+}
+```
+
+`coordinator.rs` (acima do teste):
+```rust
+pub fn make_filenames(timestamp: &str) -> (String, String) {
+    (format!("REC-{timestamp}.mp4"), format!("REC-{timestamp}.metadata.json"))
+}
+```
+
+- [ ] **Step 4: Rodar pra ver passar**
+
+Run: `cd src-tauri && cargo test finalizer 2>&1 | tail -10 && cargo test coordinator 2>&1 | tail -10`
+Expected: ambos `ok`.
+
+- [ ] **Step 5: Commit**
+
+```bash
+cd ~/Github/open-recorder && git add -A && \
+git -c user.name="Hudson Brendon" -c user.email="contato.hudsonbrendon@gmail.com" \
+commit -m "feat: add metadata finalizer and filename helper"
+```
+
+---
+
+## Task 7: ffmpeg sidecar / verificação de binário
+
+Garante que o `ffmpeg` está disponível. Para F1, usa o `ffmpeg` do PATH (verificado no start) com mensagem de erro clara se ausente; documenta o caminho de sidecar para depois.
+
+**Files:**
+- Modify: `src-tauri/src/capture/ffmpeg.rs`
+
+**Interfaces:**
+- Consumes: `ffmpeg_binary` (Task 4).
+- Produces: `fn ensure_ffmpeg() -> Result<(), String>` — roda `ffmpeg -version`; erro amigável se faltar.
+
+- [ ] **Step 1: Escrever teste (verifica forma do erro, não a presença)**
+
+Em `ffmpeg.rs` (adicionar ao mod tests):
+```rust
+    #[test]
+    fn ensure_ffmpeg_returns_result() {
+        // Não assume ffmpeg instalado no CI; só garante que retorna sem panicar
+        // e que, se erro, a mensagem menciona ffmpeg.
+        if let Err(msg) = ensure_ffmpeg() {
+            assert!(msg.to_lowercase().contains("ffmpeg"), "{msg}");
+        }
+    }
+```
+
+- [ ] **Step 2: Rodar pra ver falhar**
+
+Run: `cd src-tauri && cargo test ffmpeg 2>&1 | tail -10`
+Expected: `cannot find function ensure_ffmpeg`.
+
+- [ ] **Step 3: Implementar**
+
+Em `ffmpeg.rs`:
+```rust
+use std::process::Command;
+
+pub fn ensure_ffmpeg() -> Result<(), String> {
+    match Command::new(ffmpeg_binary()).arg("-version").output() {
+        Ok(out) if out.status.success() => Ok(()),
+        Ok(_) => Err("ffmpeg encontrado mas retornou erro ao executar -version".into()),
+        Err(_) => Err("ffmpeg não encontrado no PATH. Instale o ffmpeg para gravar.".into()),
+    }
+}
+```
+
+> **Sidecar (depois):** para empacotar, baixar binários estáticos do ffmpeg por
+> plataforma em `src-tauri/binaries/ffmpeg-<target-triple>` e referenciar em
+> `tauri.conf.json > bundle.externalBin`. Trocar `ffmpeg_binary()` para resolver
+> via `tauri::process::current_binary`/sidecar. Fora do escopo do F1 (usa PATH).
+
+- [ ] **Step 4: Rodar + garantir ffmpeg presente no dev**
+
+Run: `which ffmpeg || brew install ffmpeg` (no dev). Depois `cd src-tauri && cargo test ffmpeg 2>&1 | tail -10`.
+Expected: `test result: ok` (3 testes ffmpeg).
+
+- [ ] **Step 5: Commit**
+
+```bash
+cd ~/Github/open-recorder && git add -A && \
+git -c user.name="Hudson Brendon" -c user.email="contato.hudsonbrendon@gmail.com" \
+commit -m "feat: add ffmpeg availability check"
+```
+
+---
+
+## Task 8: Source enumerator (scap) — smoke
+
+`scap` exige permissão e ambiente gráfico; não unit-testável de forma confiável. Implementar consultando a API atual do crate `scap` (use docs/context7 se necessário — a API de listagem de alvos pode diferir entre versões).
+
+**Files:**
+- Modify: `src-tauri/src/capture/source_enum.rs`
+
+**Interfaces:**
+- Consumes: `CaptureSource`, `SourceKind` (Task 3).
+- Produces:
+  - `struct SourceOption { pub id: String, pub name: String, pub kind: String, pub rect: [i64;4] }`
+  - `fn list_displays() -> Result<Vec<SourceOption>, String>`
+  - `fn list_windows() -> Result<Vec<SourceOption>, String>`
+  - `fn to_capture_source(opt: &SourceOption) -> CaptureSource`
+
+- [ ] **Step 1: Implementar usando a API do scap**
+
+Consultar a API da versão de `scap` em uso (`scap::get_all_targets()` / `Target` enum, ou equivalente). Mapear cada display/janela para `SourceOption`. Exemplo de forma (ajustar aos tipos reais do crate):
+
+```rust
+use crate::model::source::{CaptureSource, SourceKind};
+
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct SourceOption {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub rect: [i64; 4],
+}
+
+pub fn list_displays() -> Result<Vec<SourceOption>, String> {
+    if !scap::has_permission() {
+        return Err("Permissão de captura de tela ausente".into());
+    }
+    let targets = scap::get_all_targets();
+    let mut out = Vec::new();
+    for t in targets {
+        if let scap::Target::Display(d) = t {
+            out.push(SourceOption {
+                id: d.id.to_string(),
+                name: format!("Tela {}", d.id),
+                kind: "display".into(),
+                rect: [0, 0, d.width as i64, d.height as i64],
+            });
+        }
+    }
+    Ok(out)
+}
+
+pub fn list_windows() -> Result<Vec<SourceOption>, String> {
+    if !scap::has_permission() {
+        return Err("Permissão de captura de tela ausente".into());
+    }
+    let targets = scap::get_all_targets();
+    let mut out = Vec::new();
+    for t in targets {
+        if let scap::Target::Window(w) = t {
+            out.push(SourceOption {
+                id: w.id.to_string(),
+                name: w.title.clone(),
+                kind: "window".into(),
+                rect: [0, 0, 0, 0],
+            });
+        }
+    }
+    Ok(out)
+}
+
+pub fn to_capture_source(opt: &SourceOption) -> CaptureSource {
+    let kind = match opt.kind.as_str() {
+        "window" => SourceKind::Window,
+        "region" => SourceKind::Region,
+        _ => SourceKind::Display,
+    };
+    CaptureSource { kind, id: opt.id.clone(), rect: opt.rect }
+}
+```
+
+> Se a API do `scap` divergir do exemplo, **ajustar ao crate real** (verificar
+> `scap` no docs.rs/context7). Reportar DONE_WITH_CONCERNS descrevendo a API real
+> usada se diferir.
+
+- [ ] **Step 2: Compilar**
+
+Run: `cd src-tauri && cargo build 2>&1 | tail -10`
+Expected: `Finished` sem erros.
+
+- [ ] **Step 3: Smoke manual (depois, via UI na Task 12)**
+
+A verificação real (lista telas/janelas com permissão concedida) acontece no smoke da Task 12. Sem teste automatizado aqui.
+
+- [ ] **Step 4: Commit**
+
+```bash
+cd ~/Github/open-recorder && git add -A && \
+git -c user.name="Hudson Brendon" -c user.email="contato.hudsonbrendon@gmail.com" \
+commit -m "feat: add scap-based source enumerator"
+```
+
+---
+
+## Task 9: Video + audio capture (scap→ffmpeg, cpal) — smoke
+
+Integração de captura. Sem unit test (hardware/permissão). Implementar consultando as APIs reais de `scap` (recebimento de frames) e `cpal` (stream de input de áudio). Reportar DONE_WITH_CONCERNS se a API divergir do esboço.
+
+**Files:**
+- Modify: `src-tauri/src/capture/video_capture.rs`, `src-tauri/src/capture/audio_capture.rs`
+
+**Interfaces:**
+- Consumes: `encode_args`, `ffmpeg_binary` (Task 4), `CaptureSource` (Task 3).
+- Produces:
+  - `struct VideoCapture` com `fn start(source: &CaptureSource, fps: u32, video_tmp: &Path) -> Result<VideoCapture, String>` e `fn stop(self) -> Result<(), String>`. Internamente: inicia `scap` capturer, spawna thread que lê frames BGRA e escreve no stdin de um `ffmpeg` (`encode_args`), encerra ffmpeg no stop.
+  - `struct AudioCapture` com `fn start(device_id: Option<String>, audio_tmp: &Path) -> Result<AudioCapture, String>` e `fn stop(self) -> Result<(), String>`. Usa `cpal` para gravar WAV do mic; `fn list_microphones() -> Vec<(String, String)>`.
+
+- [ ] **Step 1: Implementar `video_capture.rs`**
+
+Esboço (ajustar à API real do `scap`):
+```rust
+use std::io::Write;
+use std::path::Path;
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
+use std::thread::JoinHandle;
+use crate::model::source::CaptureSource;
+use crate::capture::ffmpeg::{encode_args, ffmpeg_binary};
+
+pub struct VideoCapture {
+    stop_tx: mpsc::Sender<()>,
+    handle: Option<JoinHandle<()>>,
+    ffmpeg: Child,
+}
+
+impl VideoCapture {
+    pub fn start(source: &CaptureSource, fps: u32, video_tmp: &Path) -> Result<Self, String> {
+        let [_, _, w, h] = source.rect;
+        let args = encode_args(w as u32, h as u32, fps, video_tmp.to_str().unwrap());
+        let mut ffmpeg = Command::new(ffmpeg_binary())
+            .args(&args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("falha ao iniciar ffmpeg: {e}"))?;
+        let mut stdin = ffmpeg.stdin.take().ok_or("sem stdin do ffmpeg")?;
+
+        // Configurar e iniciar o capturer scap (API real do crate):
+        let mut capturer = scap::capturer::Capturer::build(scap::capturer::Options {
+            fps,
+            target: None, // resolver pelo source.id na API real
+            show_cursor: true,
+            output_type: scap::frame::FrameType::BGRAFrame,
+            ..Default::default()
+        }).map_err(|e| format!("falha scap: {e:?}"))?;
+        capturer.start_capture();
+
+        let (stop_tx, stop_rx) = mpsc::channel::<()>();
+        let handle = std::thread::spawn(move || {
+            loop {
+                if stop_rx.try_recv().is_ok() { break; }
+                match capturer.get_next_frame() {
+                    Ok(scap::frame::Frame::BGRA(f)) => { let _ = stdin.write_all(&f.data); }
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+            }
+            capturer.stop_capture();
+            drop(stdin); // fecha stdin -> ffmpeg finaliza
+        });
+
+        Ok(Self { stop_tx, handle: Some(handle), ffmpeg })
+    }
+
+    pub fn stop(mut self) -> Result<(), String> {
+        let _ = self.stop_tx.send(());
+        if let Some(h) = self.handle.take() { let _ = h.join(); }
+        let _ = self.ffmpeg.wait();
+        Ok(())
+    }
+}
+```
+
+- [ ] **Step 2: Implementar `audio_capture.rs`**
+
+Esboço com `cpal` gravando WAV (usar crate `hound` para WAV — adicionar `hound = "3"` ao Cargo.toml):
+```rust
+use std::path::Path;
+use std::sync::{Arc, Mutex};
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+
+pub struct AudioCapture {
+    stream: cpal::Stream,
+    writer: Arc<Mutex<Option<hound::WavWriter<std::io::BufWriter<std::fs::File>>>>>,
+}
+
+pub fn list_microphones() -> Vec<(String, String)> {
+    let host = cpal::default_host();
+    host.input_devices()
+        .map(|devs| devs.filter_map(|d| d.name().ok().map(|n| (n.clone(), n))).collect())
+        .unwrap_or_default()
+}
+
+impl AudioCapture {
+    pub fn start(device_id: Option<String>, audio_tmp: &Path) -> Result<Self, String> {
+        let host = cpal::default_host();
+        let device = match device_id {
+            Some(name) => host.input_devices().map_err(|e| e.to_string())?
+                .find(|d| d.name().map(|n| n == name).unwrap_or(false))
+                .ok_or("microfone não encontrado")?,
+            None => host.default_input_device().ok_or("sem microfone padrão")?,
+        };
+        let config = device.default_input_config().map_err(|e| e.to_string())?;
+        let spec = hound::WavSpec {
+            channels: config.channels(),
+            sample_rate: config.sample_rate().0,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let writer = hound::WavWriter::create(audio_tmp, spec).map_err(|e| e.to_string())?;
+        let writer = Arc::new(Mutex::new(Some(writer)));
+        let w2 = writer.clone();
+        let err_fn = |e| eprintln!("erro de áudio: {e}");
+        let stream = device.build_input_stream(
+            &config.into(),
+            move |data: &[f32], _: &_| {
+                if let Some(w) = w2.lock().unwrap().as_mut() {
+                    for &s in data { let _ = w.write_sample(s); }
+                }
+            },
+            err_fn, None,
+        ).map_err(|e| e.to_string())?;
+        stream.play().map_err(|e| e.to_string())?;
+        Ok(Self { stream, writer })
+    }
+
+    pub fn stop(self) -> Result<(), String> {
+        drop(self.stream);
+        if let Some(w) = self.writer.lock().unwrap().take() {
+            w.finalize().map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+}
+```
+
+Adicionar ao `Cargo.toml`: `hound = "3"`.
+
+- [ ] **Step 3: Compilar**
+
+Run: `cd src-tauri && cargo build 2>&1 | tail -15`
+Expected: `Finished`. Se a API de `scap`/`cpal` divergir, corrigir conforme o crate real e anotar em DONE_WITH_CONCERNS.
+
+- [ ] **Step 4: Smoke manual (na Task 12, gravação real)**
+
+Verificação fim-a-fim na Task 12.
+
+- [ ] **Step 5: Commit**
+
+```bash
+cd ~/Github/open-recorder && git add -A && \
+git -c user.name="Hudson Brendon" -c user.email="contato.hudsonbrendon@gmail.com" \
+commit -m "feat: add video (scap->ffmpeg) and audio (cpal) capture"
+```
+
+---
+
+## Task 10: RecordingCoordinator + comandos Tauri
+
+**Files:**
+- Modify: `src-tauri/src/recording/coordinator.rs`, `src-tauri/src/commands.rs`, `src-tauri/src/lib.rs`
+
+**Interfaces:**
+- Consumes: tudo das tasks anteriores.
+- Produces:
+  - `struct Coordinator` (estado: gravação ativa, paths, source, fps, start_ms, input recorder, capturers). Guardado em `tauri::State<Mutex<Coordinator>>`.
+  - Comandos Tauri (em `commands.rs`):
+    - `list_sources() -> Result<SourcesPayload, String>` (`{ displays, windows }`)
+    - `list_microphones() -> Vec<MicOption>` (`{ id, name }`)
+    - `start_recording(source: SourceOptionInput, mic_id: Option<String>) -> Result<(), String>`
+    - `stop_recording() -> Result<RecordingResult, String>` (`{ video_path, metadata_path, duration_ms }`)
+    - `reveal_in_folder(path: String) -> Result<(), String>`
+  - Registrados no `invoke_handler` em `lib.rs`. Remover `greet`.
+
+- [ ] **Step 1: Implementar `Coordinator` em `coordinator.rs`**
+
+Manter `make_filenames` (Task 6). Adicionar o struct e métodos `start`/`stop` que ligam `VideoCapture`, `AudioCapture`, `InputRecorder`, e no stop chamam `mux_args`+ffmpeg e `write_metadata`. Diretório de saída: pasta de vídeos do usuário + `OpenRecorder/`. Usar timestamp via `std::time::SystemTime`. Estado de gravação ativa em campos `Option<...>`.
+
+```rust
+use std::path::PathBuf;
+use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
+use crate::model::source::CaptureSource;
+use crate::capture::{video_capture::VideoCapture, audio_capture::AudioCapture,
+                     input_recorder::InputRecorder, finalizer, ffmpeg};
+
+#[derive(serde::Serialize, Clone, PartialEq, Debug)]
+pub struct RecordingResult {
+    pub video_path: String,
+    pub metadata_path: String,
+    pub duration_ms: u64,
+}
+
+#[derive(Default)]
+pub struct Coordinator {
+    active: Option<Active>,
+}
+
+struct Active {
+    source: CaptureSource,
+    fps: u32,
+    start_ms: u64,
+    video_tmp: PathBuf,
+    audio_tmp: PathBuf,
+    out_video: PathBuf,
+    out_meta: PathBuf,
+    has_audio: bool,
+    video: Option<VideoCapture>,
+    audio: Option<AudioCapture>,
+    input: InputRecorder,
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
+}
+
+impl Coordinator {
+    pub fn output_dir() -> PathBuf {
+        let base = dirs_next_videos();
+        let dir = base.join("OpenRecorder");
+        let _ = std::fs::create_dir_all(&dir);
+        dir
+    }
+
+    pub fn start(&mut self, source: CaptureSource, mic_id: Option<String>, fps: u32) -> Result<(), String> {
+        ffmpeg::ensure_ffmpeg()?;
+        if self.active.is_some() { return Err("gravação já em andamento".into()); }
+        let ts = timestamp();
+        let (vname, mname) = make_filenames(&ts);
+        let dir = Self::output_dir();
+        let out_video = dir.join(&vname);
+        let out_meta = dir.join(&mname);
+        let video_tmp = dir.join(format!("{ts}.video.mp4"));
+        let audio_tmp = dir.join(format!("{ts}.audio.wav"));
+
+        let start_ms = now_ms();
+        let input = InputRecorder::new(source.rect, start_ms);
+        let video = VideoCapture::start(&source, fps, &video_tmp)?;
+        let has_audio = mic_id.is_some();
+        let audio = if has_audio {
+            Some(AudioCapture::start(mic_id, &audio_tmp)?)
+        } else { None };
+
+        self.active = Some(Active {
+            source, fps, start_ms, video_tmp, audio_tmp, out_video, out_meta,
+            has_audio, video: Some(video), audio, input,
+        });
+        Ok(())
+    }
+
+    pub fn stop(&mut self) -> Result<RecordingResult, String> {
+        let mut a = self.active.take().ok_or("nenhuma gravação ativa")?;
+        let duration_ms = now_ms().saturating_sub(a.start_ms);
+        if let Some(v) = a.video.take() { v.stop()?; }
+        if let Some(au) = a.audio.take() { au.stop()?; }
+
+        if a.has_audio {
+            let args = ffmpeg::mux_args(
+                a.video_tmp.to_str().unwrap(),
+                a.audio_tmp.to_str().unwrap(),
+                a.out_video.to_str().unwrap());
+            Command::new(ffmpeg::ffmpeg_binary()).args(&args).output()
+                .map_err(|e| format!("mux falhou: {e}"))?;
+        } else {
+            std::fs::rename(&a.video_tmp, &a.out_video).map_err(|e| e.to_string())?;
+        }
+        let _ = std::fs::remove_file(&a.video_tmp);
+        let _ = std::fs::remove_file(&a.audio_tmp);
+
+        let events = a.input.take_events();
+        let meta = finalizer::build_metadata(&a.source, a.fps, duration_ms, events);
+        finalizer::write_metadata(&meta, &a.out_meta).map_err(|e| e.to_string())?;
+
+        Ok(RecordingResult {
+            video_path: a.out_video.to_string_lossy().to_string(),
+            metadata_path: a.out_meta.to_string_lossy().to_string(),
+            duration_ms,
+        })
+    }
+}
+
+fn timestamp() -> String {
+    // yyyymmdd-hhmmss simples baseado em epoch local — usar chrono se preferir.
+    let secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    format!("{secs}")
+}
+
+fn dirs_next_videos() -> PathBuf {
+    std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("."))
+        .join("Movies")
+}
+```
+
+> Nota: o `input` real (thread `rdev`) é ligado no `start` chamando uma função
+> que faz `rdev::listen` numa thread e empurra para o `InputRecorder` via canal.
+> Como `rdev::listen` é bloqueante e global, encapsular numa thread com canal de
+> stop. Se a integração `rdev` ficar complexa, entregar o vídeo+áudio funcionando
+> e reportar o input como DONE_WITH_CONCERNS (degrada: events vazio).
+
+- [ ] **Step 2: Implementar comandos em `commands.rs`**
+
+```rust
+use tauri::State;
+use std::sync::Mutex;
+use crate::recording::coordinator::{Coordinator, RecordingResult};
+use crate::capture::source_enum::{self, SourceOption};
+use crate::capture::audio_capture;
+
+#[derive(serde::Serialize)]
+pub struct SourcesPayload {
+    pub displays: Vec<SourceOption>,
+    pub windows: Vec<SourceOption>,
+}
+
+#[derive(serde::Serialize)]
+pub struct MicOption { pub id: String, pub name: String }
+
+#[tauri::command]
+pub fn list_sources() -> Result<SourcesPayload, String> {
+    Ok(SourcesPayload {
+        displays: source_enum::list_displays()?,
+        windows: source_enum::list_windows().unwrap_or_default(),
+    })
+}
+
+#[tauri::command]
+pub fn list_microphones() -> Vec<MicOption> {
+    audio_capture::list_microphones().into_iter()
+        .map(|(id, name)| MicOption { id, name }).collect()
+}
+
+#[tauri::command]
+pub fn start_recording(
+    state: State<'_, Mutex<Coordinator>>,
+    source: SourceOption,
+    mic_id: Option<String>,
+) -> Result<(), String> {
+    let cs = source_enum::to_capture_source(&source);
+    state.lock().unwrap().start(cs, mic_id, 30)
+}
+
+#[tauri::command]
+pub fn stop_recording(state: State<'_, Mutex<Coordinator>>) -> Result<RecordingResult, String> {
+    state.lock().unwrap().stop()
+}
+
+#[tauri::command]
+pub fn reveal_in_folder(path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    let dir = p.parent().unwrap_or(p);
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(dir).spawn();
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("explorer").arg(dir).spawn();
+    #[cfg(target_os = "linux")]
+    let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
+    Ok(())
+}
+```
+
+`SourceOption` precisa derivar `Deserialize` também (adicionar `Deserialize` ao derive em `source_enum.rs`).
+
+- [ ] **Step 3: Registrar em `lib.rs`**
+
+Substituir o `invoke_handler` e remover `greet`:
+```rust
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .manage(std::sync::Mutex::new(crate::recording::coordinator::Coordinator::default()))
+        .invoke_handler(tauri::generate_handler![
+            crate::commands::list_sources,
+            crate::commands::list_microphones,
+            crate::commands::start_recording,
+            crate::commands::stop_recording,
+            crate::commands::reveal_in_folder,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
+```
+
+- [ ] **Step 4: Compilar + rodar testes**
+
+Run: `cd src-tauri && cargo build 2>&1 | tail -10 && cargo test 2>&1 | tail -15`
+Expected: build `Finished`; testes unitários (Tasks 2–7) `ok`.
+
+- [ ] **Step 5: Commit**
+
+```bash
+cd ~/Github/open-recorder && git add -A && \
+git -c user.name="Hudson Brendon" -c user.email="contato.hudsonbrendon@gmail.com" \
+commit -m "feat: add RecordingCoordinator and Tauri commands"
+```
+
+---
+
+## Task 11: API tipada + util de formatação (UI lib) — vitest
+
+**Files:**
+- Create: `src/lib/api.ts`, `src/lib/format.ts`, `src/lib/format.test.ts`
+- Modify: `package.json` (script de teste), criar `vitest.config.ts`
+
+**Interfaces:**
+- Consumes: comandos Tauri (Task 10).
+- Produces:
+  - `src/lib/api.ts`: wrappers `listSources()`, `listMicrophones()`, `startRecording(source, micId)`, `stopRecording()`, `revealInFolder(path)` + tipos TS (`SourceOption`, `MicOption`, `RecordingResult`).
+  - `src/lib/format.ts`: `formatElapsed(ms: number): string` (→ `"MM:SS"`), `fileName(path: string): string`.
+
+- [ ] **Step 1: Adicionar vitest**
+
+Run: `pnpm add -D vitest` e adicionar em `package.json` scripts: `"test": "vitest run"`.
+Criar `vitest.config.ts`:
+```ts
+import { defineConfig } from "vitest/config";
+export default defineConfig({ test: { environment: "node" } });
+```
+
+- [ ] **Step 2: Escrever testes falhando (`src/lib/format.test.ts`)**
+
+```ts
+import { describe, it, expect } from "vitest";
+import { formatElapsed, fileName } from "./format";
+
+describe("formatElapsed", () => {
+  it("formats milliseconds as MM:SS", () => {
+    expect(formatElapsed(0)).toBe("00:00");
+    expect(formatElapsed(65000)).toBe("01:05");
+    expect(formatElapsed(3599000)).toBe("59:59");
+  });
+});
+
+describe("fileName", () => {
+  it("extracts the last path segment", () => {
+    expect(fileName("/Users/x/Movies/OpenRecorder/REC-1.mp4")).toBe("REC-1.mp4");
+    expect(fileName("C:\\\\Videos\\\\REC-2.mp4")).toBe("REC-2.mp4");
+  });
+});
+```
+
+- [ ] **Step 3: Rodar pra ver falhar**
+
+Run: `pnpm test 2>&1 | tail -15`
+Expected: falha — `format.ts` não existe.
+
+- [ ] **Step 4: Implementar `format.ts` e `api.ts`**
+
+`src/lib/format.ts`:
+```ts
+export function formatElapsed(ms: number): string {
+  const totalSec = Math.floor(ms / 1000);
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+export function fileName(path: string): string {
+  const parts = path.split(/[\\/]/);
+  return parts[parts.length - 1] ?? path;
+}
+```
+
+`src/lib/api.ts`:
+```ts
+import { invoke } from "@tauri-apps/api/core";
+
+export interface SourceOption { id: string; name: string; kind: string; rect: [number, number, number, number]; }
+export interface MicOption { id: string; name: string; }
+export interface SourcesPayload { displays: SourceOption[]; windows: SourceOption[]; }
+export interface RecordingResult { video_path: string; metadata_path: string; duration_ms: number; }
+
+export const listSources = () => invoke<SourcesPayload>("list_sources");
+export const listMicrophones = () => invoke<MicOption[]>("list_microphones");
+export const startRecording = (source: SourceOption, micId: string | null) =>
+  invoke<void>("start_recording", { source, micId });
+export const stopRecording = () => invoke<RecordingResult>("stop_recording");
+export const revealInFolder = (path: string) => invoke<void>("reveal_in_folder", { path });
 ```
 
 - [ ] **Step 5: Rodar pra ver passar**
 
-Run:
-```bash
-cd ~/Github/open-recorder && xcodebuild test -scheme OpenRecorder -destination 'platform=macOS' 2>&1 | tail -20
-```
-Expected: `** TEST SUCCEEDED **`.
+Run: `pnpm test 2>&1 | tail -10`
+Expected: `Test Files 1 passed`, 2 testes ok.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 cd ~/Github/open-recorder && git add -A && \
 git -c user.name="Hudson Brendon" -c user.email="contato.hudsonbrendon@gmail.com" \
-commit -m "feat: add CaptureSource and screen-to-source coordinate mapper"
+commit -m "feat: add typed Tauri API wrappers and format utils with vitest"
 ```
 
 ---
 
-## Task 4: Builder de `SCStreamConfiguration`
-
-Isola a lógica pura de transformar uma `CaptureSource` + opções nos valores numéricos da configuração do stream. Testável sem criar stream real.
+## Task 12: UI React (picker, controles, lista) + smoke fim-a-fim
 
 **Files:**
-- Create: `Sources/OpenRecorder/Capture/StreamConfigBuilder.swift`
-- Test: `Tests/OpenRecorderTests/StreamConfigBuilderTests.swift`
+- Create: `src/state/useRecorder.ts`, `src/components/SourcePicker.tsx`, `src/components/MicPicker.tsx`, `src/components/RecordControls.tsx`, `src/components/RecordingsList.tsx`
+- Modify: `src/App.tsx`, `src/App.css`
 
 **Interfaces:**
-- Consumes: `CaptureSource` (Task 3).
-- Produces:
-  - `struct StreamConfigValues: Equatable` com `width: Int`, `height: Int`, `fps: Int`, `sourceRect: CGRect`, `showsCursor: Bool`.
-  - `enum StreamConfigBuilder { static func values(for source: CaptureSource, fps: Int, showsCursor: Bool) -> StreamConfigValues }`
-  - `func makeConfiguration(_ values: StreamConfigValues) -> SCStreamConfiguration` (aplica os valores num objeto real; não testado por unit).
-
-- [ ] **Step 1: Escrever os testes falhando**
-
-```swift
-import XCTest
-import CoreGraphics
-@testable import OpenRecorder
-
-final class StreamConfigBuilderTests: XCTestCase {
-    func test_displayUsesFullRectAndSize() {
-        let source = CaptureSource(kind: .display, id: "1",
-                                   rect: CGRect(x: 0, y: 0, width: 2560, height: 1440),
-                                   displayID: 1)
-        let v = StreamConfigBuilder.values(for: source, fps: 30, showsCursor: true)
-        XCTAssertEqual(v.width, 2560)
-        XCTAssertEqual(v.height, 1440)
-        XCTAssertEqual(v.fps, 30)
-        XCTAssertEqual(v.sourceRect, CGRect(x: 0, y: 0, width: 2560, height: 1440))
-        XCTAssertTrue(v.showsCursor)
-    }
-
-    func test_regionUsesRectSizeForOutput() {
-        let source = CaptureSource(kind: .region, id: "1",
-                                   rect: CGRect(x: 100, y: 100, width: 640, height: 480),
-                                   displayID: 1)
-        let v = StreamConfigBuilder.values(for: source, fps: 60, showsCursor: false)
-        XCTAssertEqual(v.width, 640)
-        XCTAssertEqual(v.height, 480)
-        XCTAssertEqual(v.fps, 60)
-        XCTAssertEqual(v.sourceRect, CGRect(x: 100, y: 100, width: 640, height: 480))
-        XCTAssertFalse(v.showsCursor)
-    }
-}
-```
-
-- [ ] **Step 2: Rodar pra ver falhar**
-
-Run:
-```bash
-cd ~/Github/open-recorder && xcodegen generate && xcodebuild test -scheme OpenRecorder -destination 'platform=macOS' 2>&1 | tail -20
-```
-Expected: FAIL — `cannot find 'StreamConfigBuilder' in scope`.
-
-- [ ] **Step 3: Implementar o builder**
-
-```swift
-import ScreenCaptureKit
-import CoreGraphics
-
-struct StreamConfigValues: Equatable {
-    var width: Int
-    var height: Int
-    var fps: Int
-    var sourceRect: CGRect
-    var showsCursor: Bool
-}
-
-enum StreamConfigBuilder {
-    static func values(for source: CaptureSource, fps: Int, showsCursor: Bool) -> StreamConfigValues {
-        StreamConfigValues(
-            width: Int(source.rect.width),
-            height: Int(source.rect.height),
-            fps: fps,
-            sourceRect: source.rect,
-            showsCursor: showsCursor
-        )
-    }
-
-    static func makeConfiguration(_ v: StreamConfigValues) -> SCStreamConfiguration {
-        let config = SCStreamConfiguration()
-        config.width = v.width
-        config.height = v.height
-        config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(v.fps))
-        config.pixelFormat = kCVPixelFormatType_32BGRA
-        config.showsCursor = v.showsCursor
-        config.queueDepth = 6
-        return config
-    }
-}
-```
-
-- [ ] **Step 4: Rodar pra ver passar**
-
-Run:
-```bash
-cd ~/Github/open-recorder && xcodebuild test -scheme OpenRecorder -destination 'platform=macOS' 2>&1 | tail -20
-```
-Expected: `** TEST SUCCEEDED **`.
-
-- [ ] **Step 5: Commit**
-
-```bash
-cd ~/Github/open-recorder && git add -A && \
-git -c user.name="Hudson Brendon" -c user.email="contato.hudsonbrendon@gmail.com" \
-commit -m "feat: add SCStreamConfiguration builder with pure value logic"
-```
-
----
-
-## Task 5: InputRecorder (buffer de eventos, testável; CGEventTap real)
-
-A captura real via `CGEventTap` fica atrás de um método de injeção, para testar o buffer/serialização com eventos sintéticos. O tap real só é exercido no smoke manual.
-
-**Files:**
-- Create: `Sources/OpenRecorder/Capture/InputRecorder.swift`
-- Test: `Tests/OpenRecorderTests/InputRecorderTests.swift`
-
-**Interfaces:**
-- Consumes: `SourceCoordinateMapper` (Task 3), `InputEvent` (Task 2).
-- Produces:
-  - `final class InputRecorder` com:
-    - `init(mapper: SourceCoordinateMapper)`
-    - `func start(at startTime: CFTimeInterval)` — instala o `CGEventTap` (no-op se não houver permissão).
-    - `func stop() -> [InputEvent]` — remove o tap e devolve os eventos.
-    - `func ingest(globalPoint: CGPoint, type: String, button: String?, at time: CFTimeInterval)` — caminho testável que aplica o mapper e adiciona ao buffer (usado também internamente pelo callback do tap).
-    - `var isTapInstalled: Bool` — false quando sem permissão.
-
-- [ ] **Step 1: Escrever os testes falhando**
-
-```swift
-import XCTest
-import CoreGraphics
-@testable import OpenRecorder
-
-final class InputRecorderTests: XCTestCase {
-    func test_ingestStoresMappedEventWithRelativeTime() {
-        let mapper = SourceCoordinateMapper(sourceRect: CGRect(x: 100, y: 50, width: 800, height: 600))
-        let rec = InputRecorder(mapper: mapper)
-        rec.start(at: 1000.0)
-        rec.ingest(globalPoint: CGPoint(x: 150, y: 90), type: "click", button: "left", at: 1001.2)
-        let events = rec.stop()
-        XCTAssertEqual(events.count, 1)
-        XCTAssertEqual(events[0].tMs, 1200)            // (1001.2 - 1000.0) * 1000
-        XCTAssertEqual(events[0].x, 50)
-        XCTAssertEqual(events[0].y, 40)
-        XCTAssertEqual(events[0].type, "click")
-        XCTAssertEqual(events[0].button, "left")
-    }
-
-    func test_ingestDropsEventsOutsideSource() {
-        let mapper = SourceCoordinateMapper(sourceRect: CGRect(x: 0, y: 0, width: 100, height: 100))
-        let rec = InputRecorder(mapper: mapper)
-        rec.start(at: 0)
-        rec.ingest(globalPoint: CGPoint(x: 500, y: 500), type: "move", button: nil, at: 0.5)
-        XCTAssertEqual(rec.stop().count, 0)
-    }
-}
-```
-
-- [ ] **Step 2: Rodar pra ver falhar**
-
-Run:
-```bash
-cd ~/Github/open-recorder && xcodegen generate && xcodebuild test -scheme OpenRecorder -destination 'platform=macOS' 2>&1 | tail -20
-```
-Expected: FAIL — `cannot find 'InputRecorder' in scope`.
-
-- [ ] **Step 3: Implementar `InputRecorder`**
-
-```swift
-import CoreGraphics
-import QuartzCore
-
-final class InputRecorder {
-    private let mapper: SourceCoordinateMapper
-    private var startTime: CFTimeInterval = 0
-    private var events: [InputEvent] = []
-    private var eventTap: CFMachPort?
-    private var runLoopSource: CFRunLoopSource?
-    private(set) var isTapInstalled = false
-
-    init(mapper: SourceCoordinateMapper) {
-        self.mapper = mapper
-    }
-
-    func start(at startTime: CFTimeInterval) {
-        self.startTime = startTime
-        self.events = []
-        installTap()
-    }
-
-    func stop() -> [InputEvent] {
-        removeTap()
-        return events
-    }
-
-    /// Caminho testável e também usado pelo callback do tap.
-    func ingest(globalPoint: CGPoint, type: String, button: String?, at time: CFTimeInterval) {
-        guard let p = mapper.map(globalPoint: globalPoint) else { return }
-        let tMs = Int(((time - startTime) * 1000).rounded())
-        events.append(InputEvent(tMs: tMs, type: type, x: Int(p.x.rounded()), y: Int(p.y.rounded()), button: button))
-    }
-
-    private func installTap() {
-        let mask: CGEventMask =
-            (1 << CGEventType.leftMouseDown.rawValue) |
-            (1 << CGEventType.rightMouseDown.rawValue) |
-            (1 << CGEventType.mouseMoved.rawValue) |
-            (1 << CGEventType.leftMouseDragged.rawValue)
-
-        let callback: CGEventTapCallBack = { _, type, cgEvent, refcon in
-            guard let refcon else { return Unmanaged.passUnretained(cgEvent) }
-            let recorder = Unmanaged<InputRecorder>.fromOpaque(refcon).takeUnretainedValue()
-            let now = CACurrentMediaTime()
-            let loc = cgEvent.location
-            switch type {
-            case .leftMouseDown:
-                recorder.ingest(globalPoint: loc, type: "click", button: "left", at: now)
-            case .rightMouseDown:
-                recorder.ingest(globalPoint: loc, type: "click", button: "right", at: now)
-            case .mouseMoved, .leftMouseDragged:
-                recorder.ingest(globalPoint: loc, type: "move", button: nil, at: now)
-            default:
-                break
-            }
-            return Unmanaged.passUnretained(cgEvent)
-        }
-
-        let refcon = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
-        guard let tap = CGEvent.tapCreate(
-            tap: .cgSessionEventTap,
-            place: .headInsertEventTap,
-            options: .listenOnly,
-            eventsOfInterest: mask,
-            callback: callback,
-            userInfo: refcon
-        ) else {
-            isTapInstalled = false
-            return
-        }
-        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
-        CGEvent.tapEnable(tap: tap, enable: true)
-        self.eventTap = tap
-        self.runLoopSource = source
-        self.isTapInstalled = true
-    }
-
-    private func removeTap() {
-        if let tap = eventTap {
-            CGEvent.tapEnable(tap: tap, enable: false)
-            CFMachPortInvalidate(tap)
-        }
-        if let source = runLoopSource {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
-        }
-        eventTap = nil
-        runLoopSource = nil
-        isTapInstalled = false
-    }
-}
-```
-
-- [ ] **Step 4: Rodar pra ver passar**
-
-Run:
-```bash
-cd ~/Github/open-recorder && xcodebuild test -scheme OpenRecorder -destination 'platform=macOS' 2>&1 | tail -20
-```
-Expected: `** TEST SUCCEEDED **`.
-
-- [ ] **Step 5: Commit**
-
-```bash
-cd ~/Github/open-recorder && git add -A && \
-git -c user.name="Hudson Brendon" -c user.email="contato.hudsonbrendon@gmail.com" \
-commit -m "feat: add InputRecorder with testable ingest and CGEventTap install"
-```
-
----
-
-## Task 6: VideoWriter (wrapper AVAssetWriter) — teste de integração
-
-Recebe `CMSampleBuffer`s e escreve um `.mp4`. Testável de verdade: gera pixel buffers sintéticos, escreve, e verifica que o `.mp4` resultante é um `AVAsset` válido com uma trilha de vídeo.
-
-**Files:**
-- Create: `Sources/OpenRecorder/Capture/VideoWriter.swift`
-- Test: `Tests/OpenRecorderTests/VideoWriterTests.swift`
-
-**Interfaces:**
-- Consumes: nada.
-- Produces:
-  - `final class VideoWriter` com:
-    - `init(outputURL: URL, width: Int, height: Int) throws`
-    - `func appendVideo(_ sampleBuffer: CMSampleBuffer)` — ignora se input não está pronto.
-    - `func appendAudio(_ sampleBuffer: CMSampleBuffer)` — usado na Task 8.
-    - `func finish() async throws` — finaliza a escrita.
-  - A trilha de áudio é adicionada sob demanda no primeiro `appendAudio` (lazy), para gravações sem mic não terem trilha vazia.
-
-- [ ] **Step 1: Escrever o teste de integração falhando**
-
-```swift
-import XCTest
-import AVFoundation
-import CoreMedia
-@testable import OpenRecorder
-
-final class VideoWriterTests: XCTestCase {
-    /// Cria um CMSampleBuffer de vídeo (BGRA) com PTS dado.
-    private func makeVideoSample(width: Int, height: Int, ptsSeconds: Double) -> CMSampleBuffer {
-        var pixelBuffer: CVPixelBuffer?
-        CVPixelBufferCreate(kCFAllocatorDefault, width, height,
-                            kCVPixelFormatType_32BGRA, nil, &pixelBuffer)
-        let pb = pixelBuffer!
-        var formatDesc: CMVideoFormatDescription?
-        CMVideoFormatDescriptionCreateForImageBuffer(allocator: kCFAllocatorDefault,
-                                                      imageBuffer: pb, formatDescriptionOut: &formatDesc)
-        let pts = CMTime(seconds: ptsSeconds, preferredTimescale: 600)
-        var timing = CMSampleTimingInfo(duration: CMTime(value: 1, timescale: 30),
-                                        presentationTimeStamp: pts,
-                                        decodeTimeStamp: .invalid)
-        var sample: CMSampleBuffer?
-        CMSampleBufferCreateForImageBuffer(allocator: kCFAllocatorDefault,
-                                           imageBuffer: pb, dataReady: true,
-                                           makeDataReadyCallback: nil, refcon: nil,
-                                           formatDescription: formatDesc!,
-                                           sampleTiming: &timing, sampleBufferOut: &sample)
-        return sample!
-    }
-
-    func test_writesValidMP4WithVideoTrack() async throws {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("vw-\(UUID().uuidString).mp4")
-        defer { try? FileManager.default.removeItem(at: url) }
-
-        let writer = try VideoWriter(outputURL: url, width: 320, height: 240)
-        for i in 0..<10 {
-            writer.appendVideo(makeVideoSample(width: 320, height: 240, ptsSeconds: Double(i) / 30.0))
-            try await Task.sleep(nanoseconds: 5_000_000) // deixa o input drenar
-        }
-        try await writer.finish()
-
-        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
-        let asset = AVURLAsset(url: url)
-        let tracks = try await asset.loadTracks(withMediaType: .video)
-        XCTAssertEqual(tracks.count, 1)
-        let duration = try await asset.load(.duration)
-        XCTAssertGreaterThan(duration.seconds, 0)
-    }
-}
-```
-
-- [ ] **Step 2: Rodar pra ver falhar**
-
-Run:
-```bash
-cd ~/Github/open-recorder && xcodegen generate && xcodebuild test -scheme OpenRecorder -destination 'platform=macOS' 2>&1 | tail -20
-```
-Expected: FAIL — `cannot find 'VideoWriter' in scope`.
-
-- [ ] **Step 3: Implementar `VideoWriter`**
-
-```swift
-import AVFoundation
-import CoreMedia
-
-final class VideoWriter {
-    private let writer: AVAssetWriter
-    private let videoInput: AVAssetWriterInput
-    private var audioInput: AVAssetWriterInput?
-    private var sessionStarted = false
-    private let lock = NSLock()
-
-    init(outputURL: URL, width: Int, height: Int) throws {
-        writer = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
-        let settings: [String: Any] = [
-            AVVideoCodecKey: AVVideoCodecType.h264,
-            AVVideoWidthKey: width,
-            AVVideoHeightKey: height,
-        ]
-        videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: settings)
-        videoInput.expectsMediaDataInRealTime = true
-        guard writer.canAdd(videoInput) else {
-            throw NSError(domain: "VideoWriter", code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: "Não foi possível adicionar a trilha de vídeo"])
-        }
-        writer.add(videoInput)
-    }
-
-    private func startSessionIfNeeded(_ pts: CMTime) {
-        guard !sessionStarted else { return }
-        writer.startWriting()
-        writer.startSession(atSourceTime: pts)
-        sessionStarted = true
-    }
-
-    func appendVideo(_ sampleBuffer: CMSampleBuffer) {
-        lock.lock(); defer { lock.unlock() }
-        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-        startSessionIfNeeded(pts)
-        if videoInput.isReadyForMoreMediaData {
-            videoInput.append(sampleBuffer)
-        }
-    }
-
-    func appendAudio(_ sampleBuffer: CMSampleBuffer) {
-        lock.lock(); defer { lock.unlock() }
-        if audioInput == nil {
-            let audio = AVAssetWriterInput(mediaType: .audio, outputSettings: [
-                AVFormatIDKey: kAudioFormatMPEG4AAC,
-                AVNumberOfChannelsKey: 1,
-                AVSampleRateKey: 44100,
-                AVEncoderBitRateKey: 128_000,
-            ])
-            audio.expectsMediaDataInRealTime = true
-            if writer.canAdd(audio) {
-                writer.add(audio)
-                audioInput = audio
-            }
-        }
-        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-        startSessionIfNeeded(pts)
-        if let audioInput, audioInput.isReadyForMoreMediaData {
-            audioInput.append(sampleBuffer)
-        }
-    }
-
-    func finish() async throws {
-        videoInput.markAsFinished()
-        audioInput?.markAsFinished()
-        await writer.finishWriting()
-        if writer.status == .failed {
-            throw writer.error ?? NSError(domain: "VideoWriter", code: 2)
-        }
-    }
-}
-```
-
-> **Nota de áudio (lazy track):** adicionar input ao `AVAssetWriter` após `startWriting()` é proibido. Por isso o áudio na Task 8 precisa ser configurado **antes** do primeiro frame de vídeo. Ajuste na Task 8: o `VideoWriter` recebe um flag `hasAudio` no init quando o mic está ativo, criando a trilha de áudio antes de `startWriting()`. O teste de vídeo-só acima continua válido (sem áudio).
-
-- [ ] **Step 4: Rodar pra ver passar**
-
-Run:
-```bash
-cd ~/Github/open-recorder && xcodebuild test -scheme OpenRecorder -destination 'platform=macOS' 2>&1 | tail -20
-```
-Expected: `** TEST SUCCEEDED **`.
-
-- [ ] **Step 5: Commit**
-
-```bash
-cd ~/Github/open-recorder && git add -A && \
-git -c user.name="Hudson Brendon" -c user.email="contato.hudsonbrendon@gmail.com" \
-commit -m "feat: add VideoWriter wrapping AVAssetWriter with integration test"
-```
-
----
-
-## Task 7: VideoWriter com áudio antecipado (corrige ordem de trilha)
-
-Refatora o `VideoWriter` para aceitar `hasAudio` no init, adicionando a trilha de áudio **antes** de `startWriting()` — pré-requisito correto para mux com mic na Task 8.
-
-**Files:**
-- Modify: `Sources/OpenRecorder/Capture/VideoWriter.swift`
-- Test: `Tests/OpenRecorderTests/VideoWriterTests.swift` (adiciona caso com áudio)
-
-**Interfaces:**
-- Consumes: nada.
-- Produces: `VideoWriter.init(outputURL:width:height:hasAudio:)` (parâmetro `hasAudio: Bool`, default `false`). Quando `true`, cria a trilha de áudio no init. `appendAudio` deixa de criar trilha lazy.
-
-- [ ] **Step 1: Adicionar teste falhando com áudio**
-
-```swift
-    private func makeAudioSample(ptsSeconds: Double) -> CMSampleBuffer {
-        var asbd = AudioStreamBasicDescription(
-            mSampleRate: 44100, mFormatID: kAudioFormatLinearPCM,
-            mFormatFlags: kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked,
-            mBytesPerPacket: 2, mFramesPerPacket: 1, mBytesPerFrame: 2,
-            mChannelsPerFrame: 1, mBitsPerChannel: 16, mReserved: 0)
-        var formatDesc: CMAudioFormatDescription?
-        CMAudioFormatDescriptionCreate(allocator: kCFAllocatorDefault, asbd: &asbd,
-                                       layoutSize: 0, layout: nil, magicCookieSize: 0,
-                                       magicCookie: nil, extensions: nil, formatDescriptionOut: &formatDesc)
-        let frames = 1024
-        let byteCount = frames * 2
-        var blockBuffer: CMBlockBuffer?
-        CMBlockBufferCreateWithMemoryBlock(allocator: kCFAllocatorDefault, memoryBlock: nil,
-                                           blockLength: byteCount, blockAllocator: kCFAllocatorDefault,
-                                           customBlockSource: nil, offsetToData: 0, dataLength: byteCount,
-                                           flags: 0, blockBufferOut: &blockBuffer)
-        CMBlockBufferFillDataBytes(with: 0, blockBuffer: blockBuffer!, offsetIntoDestination: 0,
-                                   dataLength: byteCount)
-        var sample: CMSampleBuffer?
-        var timing = CMSampleTimingInfo(duration: CMTime(value: 1, timescale: 44100),
-                                        presentationTimeStamp: CMTime(seconds: ptsSeconds, preferredTimescale: 44100),
-                                        decodeTimeStamp: .invalid)
-        CMSampleBufferCreate(allocator: kCFAllocatorDefault, dataBuffer: blockBuffer, dataReady: true,
-                             makeDataReadyCallback: nil, refcon: nil, formatDescription: formatDesc!,
-                             sampleCount: frames, sampleTimingEntryCount: 1, sampleTimingArray: &timing,
-                             sampleSizeEntryCount: 1, sampleSizeArray: [2], sampleBufferOut: &sample)
-        return sample!
-    }
-
-    func test_writesMP4WithVideoAndAudioTracks() async throws {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("vwa-\(UUID().uuidString).mp4")
-        defer { try? FileManager.default.removeItem(at: url) }
-
-        let writer = try VideoWriter(outputURL: url, width: 320, height: 240, hasAudio: true)
-        for i in 0..<10 {
-            writer.appendVideo(makeVideoSample(width: 320, height: 240, ptsSeconds: Double(i) / 30.0))
-            writer.appendAudio(makeAudioSample(ptsSeconds: Double(i) / 30.0))
-            try await Task.sleep(nanoseconds: 5_000_000)
-        }
-        try await writer.finish()
-
-        let asset = AVURLAsset(url: url)
-        let video = try await asset.loadTracks(withMediaType: .video)
-        let audio = try await asset.loadTracks(withMediaType: .audio)
-        XCTAssertEqual(video.count, 1)
-        XCTAssertEqual(audio.count, 1)
-    }
-```
-
-- [ ] **Step 2: Rodar pra ver falhar**
-
-Run:
-```bash
-cd ~/Github/open-recorder && xcodebuild test -scheme OpenRecorder -destination 'platform=macOS' 2>&1 | tail -20
-```
-Expected: FAIL — `extra argument 'hasAudio' in call`.
-
-- [ ] **Step 3: Refatorar `VideoWriter`**
-
-Substituir o corpo de `VideoWriter` por:
-
-```swift
-import AVFoundation
-import CoreMedia
-
-final class VideoWriter {
-    private let writer: AVAssetWriter
-    private let videoInput: AVAssetWriterInput
-    private let audioInput: AVAssetWriterInput?
-    private var sessionStarted = false
-    private let lock = NSLock()
-
-    init(outputURL: URL, width: Int, height: Int, hasAudio: Bool = false) throws {
-        writer = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
-
-        let videoSettings: [String: Any] = [
-            AVVideoCodecKey: AVVideoCodecType.h264,
-            AVVideoWidthKey: width,
-            AVVideoHeightKey: height,
-        ]
-        videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
-        videoInput.expectsMediaDataInRealTime = true
-        guard writer.canAdd(videoInput) else {
-            throw NSError(domain: "VideoWriter", code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: "Não foi possível adicionar a trilha de vídeo"])
-        }
-        writer.add(videoInput)
-
-        if hasAudio {
-            let audio = AVAssetWriterInput(mediaType: .audio, outputSettings: [
-                AVFormatIDKey: kAudioFormatMPEG4AAC,
-                AVNumberOfChannelsKey: 1,
-                AVSampleRateKey: 44100,
-                AVEncoderBitRateKey: 128_000,
-            ])
-            audio.expectsMediaDataInRealTime = true
-            if writer.canAdd(audio) {
-                writer.add(audio)
-                audioInput = audio
-            } else {
-                audioInput = nil
-            }
-        } else {
-            audioInput = nil
-        }
-    }
-
-    private func startSessionIfNeeded(_ pts: CMTime) {
-        guard !sessionStarted else { return }
-        writer.startWriting()
-        writer.startSession(atSourceTime: pts)
-        sessionStarted = true
-    }
-
-    func appendVideo(_ sampleBuffer: CMSampleBuffer) {
-        lock.lock(); defer { lock.unlock() }
-        startSessionIfNeeded(CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
-        if videoInput.isReadyForMoreMediaData {
-            videoInput.append(sampleBuffer)
-        }
-    }
-
-    func appendAudio(_ sampleBuffer: CMSampleBuffer) {
-        lock.lock(); defer { lock.unlock() }
-        guard let audioInput else { return }
-        startSessionIfNeeded(CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
-        if audioInput.isReadyForMoreMediaData {
-            audioInput.append(sampleBuffer)
-        }
-    }
-
-    func finish() async throws {
-        lock.lock()
-        videoInput.markAsFinished()
-        audioInput?.markAsFinished()
-        lock.unlock()
-        await writer.finishWriting()
-        if writer.status == .failed {
-            throw writer.error ?? NSError(domain: "VideoWriter", code: 2)
-        }
-    }
-}
-```
-
-- [ ] **Step 4: Rodar pra ver os dois testes passarem**
-
-Run:
-```bash
-cd ~/Github/open-recorder && xcodebuild test -scheme OpenRecorder -destination 'platform=macOS' 2>&1 | tail -20
-```
-Expected: `** TEST SUCCEEDED **` (vídeo-só + vídeo+áudio).
-
-- [ ] **Step 5: Commit**
-
-```bash
-cd ~/Github/open-recorder && git add -A && \
-git -c user.name="Hudson Brendon" -c user.email="contato.hudsonbrendon@gmail.com" \
-commit -m "refactor: VideoWriter creates audio track up front via hasAudio flag"
-```
-
----
-
-## Task 8: SourceEnumerator (lista displays/janelas) — smoke manual
-
-`SCShareableContent` exige permissão de Screen Recording e ambiente gráfico; não é unit-testável de forma confiável. Lógica mínima + verificação manual num pequeno harness de debug.
-
-**Files:**
-- Create: `Sources/OpenRecorder/Capture/SourceEnumerator.swift`
-
-**Interfaces:**
-- Consumes: `CaptureSource`, `CaptureSourceKind` (Task 3).
-- Produces:
-  - `struct DisplayOption: Identifiable, Equatable { let id: String; let name: String; let source: CaptureSource }`
-  - `struct WindowOption: Identifiable, Equatable { let id: String; let name: String; let source: CaptureSource }`
-  - `enum SourceEnumerator { static func displays() async throws -> [DisplayOption]; static func windows() async throws -> [WindowOption] }`
-
-- [ ] **Step 1: Implementar o enumerator**
-
-```swift
-import ScreenCaptureKit
-import CoreGraphics
-
-struct DisplayOption: Identifiable, Equatable {
-    let id: String
-    let name: String
-    let source: CaptureSource
-}
-
-struct WindowOption: Identifiable, Equatable {
-    let id: String
-    let name: String
-    let source: CaptureSource
-}
-
-enum SourceEnumerator {
-    static func displays() async throws -> [DisplayOption] {
-        let content = try await SCShareableContent.excludingDesktopWindows(false,
-                                                                           onScreenWindowsOnly: true)
-        return content.displays.map { display in
-            let rect = CGRect(x: CGFloat(display.frame.origin.x),
-                              y: CGFloat(display.frame.origin.y),
-                              width: CGFloat(display.width),
-                              height: CGFloat(display.height))
-            let source = CaptureSource(kind: .display, id: String(display.displayID),
-                                       rect: rect, displayID: display.displayID)
-            return DisplayOption(id: String(display.displayID),
-                                 name: "Tela \(display.displayID) (\(display.width)×\(display.height))",
-                                 source: source)
-        }
-    }
-
-    static func windows() async throws -> [WindowOption] {
-        let content = try await SCShareableContent.excludingDesktopWindows(true,
-                                                                           onScreenWindowsOnly: true)
-        return content.windows.compactMap { window in
-            guard let title = window.title, !title.isEmpty,
-                  let app = window.owningApplication else { return nil }
-            let displayID = CGMainDisplayID()
-            let source = CaptureSource(kind: .window, id: String(window.windowID),
-                                       rect: window.frame, displayID: displayID)
-            return WindowOption(id: String(window.windowID),
-                                name: "\(app.applicationName) — \(title)",
-                                source: source)
-        }
-    }
-}
-```
-
-- [ ] **Step 2: Buildar (sem testes novos)**
-
-Run:
-```bash
-cd ~/Github/open-recorder && xcodegen generate && xcodebuild build -scheme OpenRecorder -destination 'platform=macOS' 2>&1 | tail -10
-```
-Expected: `** BUILD SUCCEEDED **`.
-
-- [ ] **Step 3: Smoke manual — adicionar botão de debug temporário**
-
-Em `ContentView.swift`, dentro do `VStack`, adicionar temporariamente:
-
-```swift
-            Button("Debug: listar fontes") {
-                Task {
-                    let displays = (try? await SourceEnumerator.displays()) ?? []
-                    let windows = (try? await SourceEnumerator.windows()) ?? []
-                    print("Displays: \(displays.map(\.name))")
-                    print("Windows: \(windows.count) janelas")
-                }
-            }
-```
-
-- [ ] **Step 4: Rodar o app e verificar**
-
-Run:
-```bash
-cd ~/Github/open-recorder && xcodebuild build -scheme OpenRecorder -destination 'platform=macOS' -derivedDataPath build 2>&1 | tail -5 && open build/Build/Products/Debug/OpenRecorder.app
-```
-Clicar "Debug: listar fontes". Na primeira vez, macOS pede permissão de Screen Recording → conceder em Ajustes do Sistema → Privacidade e Segurança → Gravação de Tela → reabrir o app.
-Expected (no terminal/Console): imprime ao menos uma tela e uma contagem de janelas > 0.
-
-- [ ] **Step 5: Remover o botão de debug**
-
-Apagar o `Button("Debug: listar fontes")` do `ContentView.swift`.
-
-- [ ] **Step 6: Commit**
-
-```bash
-cd ~/Github/open-recorder && git add -A && \
-git -c user.name="Hudson Brendon" -c user.email="contato.hudsonbrendon@gmail.com" \
-commit -m "feat: add SourceEnumerator for displays and windows via ScreenCaptureKit"
-```
-
----
-
-## Task 9: CaptureEngine (SCStream → VideoWriter) — smoke manual
-
-**Files:**
-- Create: `Sources/OpenRecorder/Capture/CaptureEngine.swift`
-
-**Interfaces:**
-- Consumes: `CaptureSource`, `StreamConfigBuilder`, `VideoWriter`.
-- Produces:
-  - `final class CaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate`
-  - `init(source: CaptureSource, fps: Int, writer: VideoWriter)`
-  - `func start() async throws`
-  - `func stop() async throws`
-  - `var onStreamError: ((Error) -> Void)?`
-
-- [ ] **Step 1: Implementar `CaptureEngine`**
-
-```swift
-import ScreenCaptureKit
-import AVFoundation
-
-final class CaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate {
-    private let source: CaptureSource
-    private let fps: Int
-    private let writer: VideoWriter
-    private var stream: SCStream?
-    private let sampleQueue = DispatchQueue(label: "com.openrecorder.capture")
-    var onStreamError: ((Error) -> Void)?
-
-    init(source: CaptureSource, fps: Int, writer: VideoWriter) {
-        self.source = source
-        self.fps = fps
-        self.writer = writer
-    }
-
-    func start() async throws {
-        let content = try await SCShareableContent.excludingDesktopWindows(false,
-                                                                           onScreenWindowsOnly: true)
-        let filter: SCContentFilter
-        switch source.kind {
-        case .display, .region:
-            guard let display = content.displays.first(where: { $0.displayID == source.displayID }) else {
-                throw NSError(domain: "CaptureEngine", code: 1,
-                              userInfo: [NSLocalizedDescriptionKey: "Display não encontrado"])
-            }
-            filter = SCContentFilter(display: display, excludingWindows: [])
-        case .window:
-            guard let window = content.windows.first(where: { String($0.windowID) == source.id }) else {
-                throw NSError(domain: "CaptureEngine", code: 2,
-                              userInfo: [NSLocalizedDescriptionKey: "Janela não encontrada"])
-            }
-            filter = SCContentFilter(desktopIndependentWindow: window)
-        }
-
-        let values = StreamConfigBuilder.values(for: source, fps: fps, showsCursor: true)
-        let config = StreamConfigBuilder.makeConfiguration(values)
-        if source.kind == .region {
-            config.sourceRect = source.rect
-        }
-
-        let stream = SCStream(filter: filter, configuration: config, delegate: self)
-        try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: sampleQueue)
-        try await stream.startCapture()
-        self.stream = stream
-    }
-
-    func stop() async throws {
-        try await stream?.stopCapture()
-        stream = nil
-    }
-
-    // MARK: SCStreamOutput
-    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
-                of type: SCStreamOutputType) {
-        guard type == .screen, sampleBuffer.isValid else { return }
-        // Só frames "complete" carregam imagem útil.
-        guard let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer,
-                                                                        createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
-              let statusRaw = attachments.first?[.status] as? Int,
-              let status = SCFrameStatus(rawValue: statusRaw), status == .complete else { return }
-        writer.appendVideo(sampleBuffer)
-    }
-
-    // MARK: SCStreamDelegate
-    func stream(_ stream: SCStream, didStopWithError error: Error) {
-        onStreamError?(error)
-    }
-}
-```
-
-- [ ] **Step 2: Buildar**
-
-Run:
-```bash
-cd ~/Github/open-recorder && xcodegen generate && xcodebuild build -scheme OpenRecorder -destination 'platform=macOS' 2>&1 | tail -10
-```
-Expected: `** BUILD SUCCEEDED **`.
-
-- [ ] **Step 3: Smoke manual via teste integrado (grava 2s da tela principal)**
-
-Adicionar `Tests/OpenRecorderTests/CaptureEngineSmokeTests.swift`:
-
-```swift
-import XCTest
-import AVFoundation
-@testable import OpenRecorder
-
-final class CaptureEngineSmokeTests: XCTestCase {
-    // Smoke: exige permissão de Screen Recording. Pulado se não houver displays.
-    func test_recordsTwoSecondsOfMainDisplay() async throws {
-        let displays = (try? await SourceEnumerator.displays()) ?? []
-        try XCTSkipIf(displays.isEmpty, "Sem displays/permite — smoke manual")
-        let source = displays[0].source
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("smoke-\(UUID().uuidString).mp4")
-        defer { try? FileManager.default.removeItem(at: url) }
-
-        let writer = try VideoWriter(outputURL: url,
-                                     width: Int(source.rect.width),
-                                     height: Int(source.rect.height))
-        let engine = CaptureEngine(source: source, fps: 30, writer: writer)
-        try await engine.start()
-        try await Task.sleep(nanoseconds: 2_000_000_000)
-        try await engine.stop()
-        try await writer.finish()
-
-        let asset = AVURLAsset(url: url)
-        let tracks = try await asset.loadTracks(withMediaType: .video)
-        XCTAssertEqual(tracks.count, 1)
-        XCTAssertGreaterThan(try await asset.load(.duration).seconds, 1.0)
-    }
-}
-```
-
-Run (com permissão de Screen Recording concedida):
-```bash
-cd ~/Github/open-recorder && xcodegen generate && xcodebuild test -scheme OpenRecorder -destination 'platform=macOS' -only-testing:OpenRecorderTests/CaptureEngineSmokeTests 2>&1 | tail -20
-```
-Expected: passa (ou `Skipped` se sem permissão — nesse caso conceder e repetir).
-
-- [ ] **Step 4: Commit**
-
-```bash
-cd ~/Github/open-recorder && git add -A && \
-git -c user.name="Hudson Brendon" -c user.email="contato.hudsonbrendon@gmail.com" \
-commit -m "feat: add CaptureEngine bridging SCStream to VideoWriter"
-```
-
----
-
-## Task 10: AudioRecorder (mic → VideoWriter) — smoke manual
-
-**Files:**
-- Create: `Sources/OpenRecorder/Capture/AudioRecorder.swift`
-
-**Interfaces:**
-- Consumes: `VideoWriter` (com `hasAudio: true`).
-- Produces:
-  - `final class AudioRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate`
-  - `init(deviceID: String?, writer: VideoWriter)` — `deviceID == nil` usa o mic padrão.
-  - `func start() throws`
-  - `func stop()`
-  - `static func availableMicrophones() -> [(id: String, name: String)]`
-
-- [ ] **Step 1: Implementar `AudioRecorder`**
-
-```swift
-import AVFoundation
-
-final class AudioRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
-    private let deviceID: String?
-    private let writer: VideoWriter
-    private let session = AVCaptureSession()
-    private let output = AVCaptureAudioDataOutput()
-    private let queue = DispatchQueue(label: "com.openrecorder.audio")
-
-    init(deviceID: String?, writer: VideoWriter) {
-        self.deviceID = deviceID
-        self.writer = writer
-    }
-
-    static func availableMicrophones() -> [(id: String, name: String)] {
-        let discovery = AVCaptureDevice.DiscoverySession(
-            deviceTypes: [.microphone], mediaType: .audio, position: .unspecified)
-        return discovery.devices.map { ($0.uniqueID, $0.localizedName) }
-    }
-
-    func start() throws {
-        let device: AVCaptureDevice?
-        if let deviceID {
-            device = AVCaptureDevice(uniqueID: deviceID)
-        } else {
-            device = AVCaptureDevice.default(for: .audio)
-        }
-        guard let device else {
-            throw NSError(domain: "AudioRecorder", code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: "Microfone não encontrado"])
-        }
-        let input = try AVCaptureDeviceInput(device: device)
-        session.beginConfiguration()
-        if session.canAddInput(input) { session.addInput(input) }
-        output.setSampleBufferDelegate(self, queue: queue)
-        if session.canAddOutput(output) { session.addOutput(output) }
-        session.commitConfiguration()
-        session.startRunning()
-    }
-
-    func stop() {
-        session.stopRunning()
-    }
-
-    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer,
-                       from connection: AVCaptureConnection) {
-        writer.appendAudio(sampleBuffer)
-    }
-}
-```
-
-- [ ] **Step 2: Buildar**
-
-Run:
-```bash
-cd ~/Github/open-recorder && xcodegen generate && xcodebuild build -scheme OpenRecorder -destination 'platform=macOS' 2>&1 | tail -10
-```
-Expected: `** BUILD SUCCEEDED **`.
-
-- [ ] **Step 3: Smoke manual (verificado junto na Task 11 via gravação real completa)**
-
-Sem teste automatizado isolado (mic exige permissão + hardware). Verificação acontece no smoke da Task 11 (gravação com áudio gera `.mp4` com trilha de áudio).
-
-- [ ] **Step 4: Commit**
-
-```bash
-cd ~/Github/open-recorder && git add -A && \
-git -c user.name="Hudson Brendon" -c user.email="contato.hudsonbrendon@gmail.com" \
-commit -m "feat: add AudioRecorder capturing mic into VideoWriter"
-```
-
----
-
-## Task 11: PermissionService
-
-**Files:**
-- Create: `Sources/OpenRecorder/Permissions/PermissionService.swift`
-- Test: `Tests/OpenRecorderTests/PermissionServiceTests.swift`
-
-**Interfaces:**
-- Consumes: nada.
-- Produces:
-  - `enum PermissionState: Equatable { case granted, denied, notDetermined }`
-  - `enum PermissionService`:
-    - `static func screenRecordingState() -> PermissionState`
-    - `static func microphoneState() -> PermissionState`
-    - `static func inputMonitoringState() -> PermissionState`
-    - `static func requestMicrophone() async -> Bool`
-    - `static func openSettings(for kind: PermissionKind)` — abre o painel certo.
-  - `enum PermissionKind { case screenRecording, microphone, inputMonitoring }` com `var settingsURL: URL`.
-
-- [ ] **Step 1: Escrever teste das URLs de Ajustes (parte testável)**
-
-```swift
-import XCTest
-@testable import OpenRecorder
-
-final class PermissionServiceTests: XCTestCase {
-    func test_settingsURLsArePrivacyPanels() {
-        XCTAssertEqual(PermissionKind.screenRecording.settingsURL.absoluteString,
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
-        XCTAssertEqual(PermissionKind.microphone.settingsURL.absoluteString,
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
-        XCTAssertEqual(PermissionKind.inputMonitoring.settingsURL.absoluteString,
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")
-    }
-}
-```
-
-- [ ] **Step 2: Rodar pra ver falhar**
-
-Run:
-```bash
-cd ~/Github/open-recorder && xcodegen generate && xcodebuild test -scheme OpenRecorder -destination 'platform=macOS' 2>&1 | tail -20
-```
-Expected: FAIL — `cannot find 'PermissionKind' in scope`.
-
-- [ ] **Step 3: Implementar `PermissionService`**
-
-```swift
-import AVFoundation
-import CoreGraphics
-import AppKit
-
-enum PermissionState: Equatable {
-    case granted, denied, notDetermined
-}
-
-enum PermissionKind {
-    case screenRecording, microphone, inputMonitoring
-
-    var settingsURL: URL {
-        let base = "x-apple.systempreferences:com.apple.preference.security?"
-        switch self {
-        case .screenRecording: return URL(string: base + "Privacy_ScreenCapture")!
-        case .microphone:      return URL(string: base + "Privacy_Microphone")!
-        case .inputMonitoring: return URL(string: base + "Privacy_ListenEvent")!
-        }
-    }
-}
-
-enum PermissionService {
-    static func screenRecordingState() -> PermissionState {
-        CGPreflightScreenCaptureAccess() ? .granted : .denied
-    }
-
-    static func microphoneState() -> PermissionState {
-        switch AVCaptureDevice.authorizationStatus(for: .audio) {
-        case .authorized: return .granted
-        case .denied, .restricted: return .denied
-        case .notDetermined: return .notDetermined
-        @unknown default: return .denied
-        }
-    }
-
-    static func inputMonitoringState() -> PermissionState {
-        CGPreflightListenEventAccess() ? .granted : .denied
-    }
-
-    static func requestMicrophone() async -> Bool {
-        await AVCaptureDevice.requestAccess(for: .audio)
-    }
-
-    static func requestScreenRecording() {
-        _ = CGRequestScreenCaptureAccess()
-    }
-
-    static func requestInputMonitoring() {
-        _ = CGRequestListenEventAccess()
-    }
-
-    static func openSettings(for kind: PermissionKind) {
-        NSWorkspace.shared.open(kind.settingsURL)
-    }
-}
-```
-
-- [ ] **Step 4: Rodar pra ver passar**
-
-Run:
-```bash
-cd ~/Github/open-recorder && xcodebuild test -scheme OpenRecorder -destination 'platform=macOS' 2>&1 | tail -20
-```
-Expected: `** TEST SUCCEEDED **`.
-
-- [ ] **Step 5: Commit**
-
-```bash
-cd ~/Github/open-recorder && git add -A && \
-git -c user.name="Hudson Brendon" -c user.email="contato.hudsonbrendon@gmail.com" \
-commit -m "feat: add PermissionService for screen, mic and input monitoring"
-```
-
----
-
-## Task 12: RecordingFinalizer (escreve metadata.json)
-
-**Files:**
-- Create: `Sources/OpenRecorder/Capture/RecordingFinalizer.swift`
-- Test: `Tests/OpenRecorderTests/RecordingFinalizerTests.swift`
-
-**Interfaces:**
-- Consumes: `RecordingMetadata`, `RecordingInfo`, `SourceInfo`, `InputEvent` (Task 2), `CaptureSource` (Task 3).
-- Produces:
-  - `enum RecordingFinalizer`:
-    - `static func metadata(source: CaptureSource, fps: Int, durationMs: Int, events: [InputEvent]) -> RecordingMetadata`
-    - `static func write(_ metadata: RecordingMetadata, to url: URL) throws`
-
-- [ ] **Step 1: Escrever os testes falhando**
-
-```swift
-import XCTest
-import CoreGraphics
-@testable import OpenRecorder
-
-final class RecordingFinalizerTests: XCTestCase {
-    func test_buildsMetadataFromSource() {
-        let source = CaptureSource(kind: .display, id: "1",
-                                   rect: CGRect(x: 0, y: 0, width: 1920, height: 1080),
-                                   displayID: 1)
-        let meta = RecordingFinalizer.metadata(source: source, fps: 30, durationMs: 5000,
-                                               events: [InputEvent(tMs: 10, type: "click", x: 1, y: 2, button: "left")])
-        XCTAssertEqual(meta.version, 1)
-        XCTAssertEqual(meta.recording, RecordingInfo(width: 1920, height: 1080, fps: 30, durationMs: 5000))
-        XCTAssertEqual(meta.source, SourceInfo(type: "display", id: "1", rect: [0, 0, 1920, 1080]))
-        XCTAssertEqual(meta.events.count, 1)
-    }
-
-    func test_writesJSONFileToDisk() throws {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("meta-\(UUID().uuidString).json")
-        defer { try? FileManager.default.removeItem(at: url) }
-        let source = CaptureSource(kind: .window, id: "7",
-                                   rect: CGRect(x: 5, y: 6, width: 100, height: 200), displayID: 1)
-        let meta = RecordingFinalizer.metadata(source: source, fps: 60, durationMs: 1234, events: [])
-        try RecordingFinalizer.write(meta, to: url)
-
-        let data = try Data(contentsOf: url)
-        let decoded = try JSONDecoder().decode(RecordingMetadata.self, from: data)
-        XCTAssertEqual(decoded, meta)
-    }
-}
-```
-
-- [ ] **Step 2: Rodar pra ver falhar**
-
-Run:
-```bash
-cd ~/Github/open-recorder && xcodegen generate && xcodebuild test -scheme OpenRecorder -destination 'platform=macOS' 2>&1 | tail -20
-```
-Expected: FAIL — `cannot find 'RecordingFinalizer' in scope`.
-
-- [ ] **Step 3: Implementar `RecordingFinalizer`**
-
-```swift
-import Foundation
-import CoreGraphics
-
-enum RecordingFinalizer {
-    static func metadata(source: CaptureSource, fps: Int, durationMs: Int,
-                         events: [InputEvent]) -> RecordingMetadata {
-        RecordingMetadata(
-            version: 1,
-            recording: RecordingInfo(width: Int(source.rect.width),
-                                     height: Int(source.rect.height),
-                                     fps: fps, durationMs: durationMs),
-            source: SourceInfo(type: source.kind.rawValue, id: source.id,
-                               rect: [Int(source.rect.origin.x), Int(source.rect.origin.y),
-                                      Int(source.rect.width), Int(source.rect.height)]),
-            events: events
-        )
-    }
-
-    static func write(_ metadata: RecordingMetadata, to url: URL) throws {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try encoder.encode(metadata)
-        try data.write(to: url, options: .atomic)
-    }
-}
-```
-
-- [ ] **Step 4: Rodar pra ver passar**
-
-Run:
-```bash
-cd ~/Github/open-recorder && xcodebuild test -scheme OpenRecorder -destination 'platform=macOS' 2>&1 | tail -20
-```
-Expected: `** TEST SUCCEEDED **`.
-
-- [ ] **Step 5: Commit**
-
-```bash
-cd ~/Github/open-recorder && git add -A && \
-git -c user.name="Hudson Brendon" -c user.email="contato.hudsonbrendon@gmail.com" \
-commit -m "feat: add RecordingFinalizer building and writing metadata.json"
-```
-
----
-
-## Task 13: RecordingCoordinator (orquestra start/stop)
-
-**Files:**
-- Create: `Sources/OpenRecorder/Capture/RecordingCoordinator.swift`
-- Test: `Tests/OpenRecorderTests/RecordingCoordinatorTests.swift`
-
-**Interfaces:**
-- Consumes: `CaptureEngine`, `AudioRecorder`, `InputRecorder`, `VideoWriter`, `RecordingFinalizer`, `SourceCoordinateMapper`, `CaptureSource`.
-- Produces:
-  - `struct RecordingResult: Equatable { let videoURL: URL; let metadataURL: URL; let durationMs: Int }`
-  - `final class RecordingCoordinator`:
-    - `init(outputDirectory: URL)`
-    - `func start(source: CaptureSource, micDeviceID: String?, fps: Int) async throws`
-    - `func stop() async throws -> RecordingResult`
-    - `var isRecording: Bool`
-  - Nomes de arquivo: `REC-<timestamp>.mp4` e `REC-<timestamp>.metadata.json` (mesmo timestamp).
-  - Helper testável: `static func makeFilenames(timestamp: String) -> (video: String, metadata: String)`.
-
-- [ ] **Step 1: Escrever teste da convenção de nomes**
-
-```swift
-import XCTest
-@testable import OpenRecorder
-
-final class RecordingCoordinatorTests: XCTestCase {
-    func test_filenamesShareTimestamp() {
-        let names = RecordingCoordinator.makeFilenames(timestamp: "20260617-153000")
-        XCTAssertEqual(names.video, "REC-20260617-153000.mp4")
-        XCTAssertEqual(names.metadata, "REC-20260617-153000.metadata.json")
-    }
-}
-```
-
-- [ ] **Step 2: Rodar pra ver falhar**
-
-Run:
-```bash
-cd ~/Github/open-recorder && xcodegen generate && xcodebuild test -scheme OpenRecorder -destination 'platform=macOS' 2>&1 | tail -20
-```
-Expected: FAIL — `cannot find 'RecordingCoordinator' in scope`.
-
-- [ ] **Step 3: Implementar `RecordingCoordinator`**
-
-```swift
-import Foundation
-import QuartzCore
-
-struct RecordingResult: Equatable {
-    let videoURL: URL
-    let metadataURL: URL
-    let durationMs: Int
-}
-
-final class RecordingCoordinator {
-    private let outputDirectory: URL
-    private var engine: CaptureEngine?
-    private var audio: AudioRecorder?
-    private var input: InputRecorder?
-    private var writer: VideoWriter?
-    private var currentSource: CaptureSource?
-    private var currentFps = 30
-    private var startMediaTime: CFTimeInterval = 0
-    private var videoURL: URL?
-    private var metadataURL: URL?
-    private(set) var isRecording = false
-
-    init(outputDirectory: URL) {
-        self.outputDirectory = outputDirectory
-    }
-
-    static func makeFilenames(timestamp: String) -> (video: String, metadata: String) {
-        ("REC-\(timestamp).mp4", "REC-\(timestamp).metadata.json")
-    }
-
-    private static func timestampNow() -> String {
-        let f = DateFormatter()
-        f.dateFormat = "yyyyMMdd-HHmmss"
-        return f.string(from: Date())
-    }
-
-    func start(source: CaptureSource, micDeviceID: String?, fps: Int) async throws {
-        try FileManager.default.createDirectory(at: outputDirectory,
-                                                withIntermediateDirectories: true)
-        let ts = Self.timestampNow()
-        let names = Self.makeFilenames(timestamp: ts)
-        let videoURL = outputDirectory.appendingPathComponent(names.video)
-        let metadataURL = outputDirectory.appendingPathComponent(names.metadata)
-
-        let hasMic = micDeviceID != nil || PermissionService.microphoneState() == .granted
-        let writer = try VideoWriter(outputURL: videoURL,
-                                     width: Int(source.rect.width),
-                                     height: Int(source.rect.height),
-                                     hasAudio: hasMic)
-
-        let mapper = SourceCoordinateMapper(sourceRect: source.rect)
-        let input = InputRecorder(mapper: mapper)
-        let engine = CaptureEngine(source: source, fps: fps, writer: writer)
-
-        startMediaTime = CACurrentMediaTime()
-        input.start(at: startMediaTime)
-        try await engine.start()
-
-        if hasMic {
-            let audio = AudioRecorder(deviceID: micDeviceID, writer: writer)
-            try audio.start()
-            self.audio = audio
-        }
-
-        self.engine = engine
-        self.input = input
-        self.writer = writer
-        self.currentSource = source
-        self.currentFps = fps
-        self.videoURL = videoURL
-        self.metadataURL = metadataURL
-        self.isRecording = true
-    }
-
-    func stop() async throws -> RecordingResult {
-        guard let engine, let input, let writer, let source = currentSource,
-              let videoURL, let metadataURL else {
-            throw NSError(domain: "RecordingCoordinator", code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: "Nenhuma gravação ativa"])
-        }
-        let durationMs = Int(((CACurrentMediaTime() - startMediaTime) * 1000).rounded())
-        audio?.stop()
-        try await engine.stop()
-        let events = input.stop()
-        try await writer.finish()
-
-        let meta = RecordingFinalizer.metadata(source: source, fps: currentFps,
-                                               durationMs: durationMs, events: events)
-        try RecordingFinalizer.write(meta, to: metadataURL)
-
-        self.engine = nil; self.audio = nil; self.input = nil; self.writer = nil
-        self.currentSource = nil; self.isRecording = false
-
-        return RecordingResult(videoURL: videoURL, metadataURL: metadataURL, durationMs: durationMs)
-    }
-}
-```
-
-- [ ] **Step 4: Rodar pra ver passar**
-
-Run:
-```bash
-cd ~/Github/open-recorder && xcodebuild test -scheme OpenRecorder -destination 'platform=macOS' 2>&1 | tail -20
-```
-Expected: `** TEST SUCCEEDED **`.
-
-- [ ] **Step 5: Commit**
-
-```bash
-cd ~/Github/open-recorder && git add -A && \
-git -c user.name="Hudson Brendon" -c user.email="contato.hudsonbrendon@gmail.com" \
-commit -m "feat: add RecordingCoordinator orchestrating capture, audio, input"
-```
-
----
-
-## Task 14: ViewModel + UI SwiftUI (fonte, mic, controles, lista)
-
-**Files:**
-- Create: `Sources/OpenRecorder/UI/RecorderViewModel.swift`
-- Create: `Sources/OpenRecorder/UI/SourcePickerView.swift`
-- Create: `Sources/OpenRecorder/UI/RecordingControlsView.swift`
-- Create: `Sources/OpenRecorder/UI/RecordingsListView.swift`
-- Modify: `Sources/OpenRecorder/UI/ContentView.swift`
-
-**Interfaces:**
-- Consumes: `SourceEnumerator`, `AudioRecorder.availableMicrophones`, `RecordingCoordinator`, `PermissionService`, `RecordingResult`.
+- Consumes: `src/lib/api.ts`, `src/lib/format.ts` (Task 11).
 - Produces: app utilizável fim-a-fim.
 
-- [ ] **Step 1: Implementar `RecorderViewModel`**
+- [ ] **Step 1: Implementar `useRecorder.ts`**
 
-```swift
-import SwiftUI
-import Combine
+```ts
+import { useCallback, useEffect, useRef, useState } from "react";
+import * as api from "../lib/api";
 
-@MainActor
-final class RecorderViewModel: ObservableObject {
-    @Published var displays: [DisplayOption] = []
-    @Published var windows: [WindowOption] = []
-    @Published var microphones: [(id: String, name: String)] = []
-    @Published var selectedSource: CaptureSource?
-    @Published var selectedMicID: String?
-    @Published var isRecording = false
-    @Published var elapsedMs = 0
-    @Published var recordings: [RecordingResult] = []
-    @Published var errorMessage: String?
-    @Published var screenPermissionGranted = true
+export function useRecorder() {
+  const [displays, setDisplays] = useState<api.SourceOption[]>([]);
+  const [windows, setWindows] = useState<api.SourceOption[]>([]);
+  const [mics, setMics] = useState<api.MicOption[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedMic, setSelectedMic] = useState<string | null>(null);
+  const [isRecording, setRecording] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const [recordings, setRecordings] = useState<api.RecordingResult[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const timer = useRef<number | null>(null);
+  const startedAt = useRef<number>(0);
 
-    private let coordinator: RecordingCoordinator
-    private var timer: Timer?
-    private var startDate: Date?
+  const refresh = useCallback(async () => {
+    try {
+      const s = await api.listSources();
+      setDisplays(s.displays); setWindows(s.windows);
+      const m = await api.listMicrophones();
+      setMics(m);
+      if (!selectedId && s.displays[0]) setSelectedId(s.displays[0].id);
+      if (!selectedMic && m[0]) setSelectedMic(m[0].id);
+    } catch (e) { setError(String(e)); }
+  }, [selectedId, selectedMic]);
 
-    init() {
-        let dir = FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("OpenRecorder", isDirectory: true)
-        self.coordinator = RecordingCoordinator(outputDirectory: dir)
-    }
+  useEffect(() => { refresh(); }, [refresh]);
 
-    func refreshSources() async {
-        screenPermissionGranted = PermissionService.screenRecordingState() == .granted
-        if !screenPermissionGranted {
-            PermissionService.requestScreenRecording()
-        }
-        displays = (try? await SourceEnumerator.displays()) ?? []
-        windows = (try? await SourceEnumerator.windows()) ?? []
-        microphones = AudioRecorder.availableMicrophones()
-        if selectedSource == nil { selectedSource = displays.first?.source }
-        if selectedMicID == nil { selectedMicID = microphones.first?.id }
-    }
+  const allSources = [...displays, ...windows];
+  const selected = allSources.find((x) => x.id === selectedId) ?? null;
 
-    func toggleRecording() {
-        if isRecording { stop() } else { start() }
-    }
+  const start = useCallback(async () => {
+    if (!selected) return;
+    try {
+      await api.startRecording(selected, selectedMic);
+      setRecording(true);
+      startedAt.current = Date.now();
+      timer.current = window.setInterval(() => setElapsed(Date.now() - startedAt.current), 100);
+    } catch (e) { setError(String(e)); }
+  }, [selected, selectedMic]);
 
-    private func start() {
-        guard let source = selectedSource else { return }
-        Task {
-            do {
-                if PermissionService.microphoneState() == .notDetermined {
-                    _ = await PermissionService.requestMicrophone()
-                }
-                try await coordinator.start(source: source, micDeviceID: selectedMicID, fps: 30)
-                isRecording = true
-                startDate = Date()
-                startTimer()
-            } catch {
-                errorMessage = error.localizedDescription
-            }
-        }
-    }
+  const stop = useCallback(async () => {
+    try {
+      const res = await api.stopRecording();
+      setRecordings((r) => [res, ...r]);
+    } catch (e) { setError(String(e)); }
+    setRecording(false);
+    if (timer.current) { clearInterval(timer.current); timer.current = null; }
+    setElapsed(0);
+  }, []);
 
-    private func stop() {
-        Task {
-            do {
-                let result = try await coordinator.stop()
-                recordings.insert(result, at: 0)
-            } catch {
-                errorMessage = error.localizedDescription
-            }
-            isRecording = false
-            stopTimer()
-        }
-    }
-
-    private func startTimer() {
-        timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            guard let self, let start = self.startDate else { return }
-            Task { @MainActor in self.elapsedMs = Int(Date().timeIntervalSince(start) * 1000) }
-        }
-    }
-
-    private func stopTimer() {
-        timer?.invalidate(); timer = nil; elapsedMs = 0; startDate = nil
-    }
-
-    func reveal(_ result: RecordingResult) {
-        NSWorkspace.shared.activateFileViewerSelecting([result.videoURL])
-    }
+  return { displays, windows, mics, selectedId, setSelectedId, selectedMic,
+           setSelectedMic, isRecording, elapsed, recordings, error, start, stop };
 }
 ```
 
-- [ ] **Step 2: Implementar `SourcePickerView`**
+- [ ] **Step 2: Implementar os componentes**
 
-```swift
-import SwiftUI
+`src/components/SourcePicker.tsx`:
+```tsx
+import type { SourceOption } from "../lib/api";
 
-struct SourcePickerView: View {
-    @ObservedObject var vm: RecorderViewModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Fonte").font(.headline)
-            Picker("Tela", selection: Binding(
-                get: { vm.selectedSource?.id ?? "" },
-                set: { id in
-                    if let d = vm.displays.first(where: { $0.id == id }) { vm.selectedSource = d.source }
-                    else if let w = vm.windows.first(where: { $0.id == id }) { vm.selectedSource = w.source }
-                })) {
-                Section("Telas") {
-                    ForEach(vm.displays) { Text($0.name).tag($0.id) }
-                }
-                Section("Janelas") {
-                    ForEach(vm.windows) { Text($0.name).tag($0.id) }
-                }
-            }
-            .labelsHidden()
-
-            Text("Microfone").font(.headline)
-            Picker("Mic", selection: Binding(
-                get: { vm.selectedMicID ?? "" },
-                set: { vm.selectedMicID = $0 })) {
-                ForEach(vm.microphones, id: \.id) { Text($0.name).tag($0.id) }
-            }
-            .labelsHidden()
-        }
-    }
+export function SourcePicker(props: {
+  displays: SourceOption[]; windows: SourceOption[];
+  value: string | null; onChange: (id: string) => void;
+}) {
+  return (
+    <label className="field">
+      <span>Fonte</span>
+      <select value={props.value ?? ""} onChange={(e) => props.onChange(e.target.value)}>
+        <optgroup label="Telas">
+          {props.displays.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+        </optgroup>
+        <optgroup label="Janelas">
+          {props.windows.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+        </optgroup>
+      </select>
+    </label>
+  );
 }
 ```
 
-- [ ] **Step 3: Implementar `RecordingControlsView`**
+`src/components/MicPicker.tsx`:
+```tsx
+import type { MicOption } from "../lib/api";
 
-```swift
-import SwiftUI
-
-struct RecordingControlsView: View {
-    @ObservedObject var vm: RecorderViewModel
-
-    private var timeString: String {
-        let totalSec = vm.elapsedMs / 1000
-        return String(format: "%02d:%02d", totalSec / 60, totalSec % 60)
-    }
-
-    var body: some View {
-        HStack(spacing: 16) {
-            Button(action: vm.toggleRecording) {
-                Label(vm.isRecording ? "Parar" : "Gravar",
-                      systemImage: vm.isRecording ? "stop.circle.fill" : "record.circle")
-                    .font(.title3)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(vm.isRecording ? .gray : .red)
-            .disabled(vm.selectedSource == nil)
-
-            if vm.isRecording {
-                Text(timeString).font(.title3.monospacedDigit()).foregroundStyle(.red)
-            }
-        }
-    }
+export function MicPicker(props: {
+  mics: MicOption[]; value: string | null; onChange: (id: string) => void;
+}) {
+  return (
+    <label className="field">
+      <span>Microfone</span>
+      <select value={props.value ?? ""} onChange={(e) => props.onChange(e.target.value)}>
+        {props.mics.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+      </select>
+    </label>
+  );
 }
 ```
 
-- [ ] **Step 4: Implementar `RecordingsListView`**
+`src/components/RecordControls.tsx`:
+```tsx
+import { formatElapsed } from "../lib/format";
 
-```swift
-import SwiftUI
-
-struct RecordingsListView: View {
-    @ObservedObject var vm: RecorderViewModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Gravações").font(.headline)
-            if vm.recordings.isEmpty {
-                Text("Nenhuma gravação ainda.").foregroundStyle(.secondary)
-            } else {
-                ForEach(vm.recordings, id: \.videoURL) { rec in
-                    HStack {
-                        Image(systemName: "film")
-                        Text(rec.videoURL.lastPathComponent).lineLimit(1)
-                        Spacer()
-                        Text(String(format: "%.1fs", Double(rec.durationMs) / 1000))
-                            .foregroundStyle(.secondary)
-                        Button("Mostrar") { vm.reveal(rec) }
-                    }
-                }
-            }
-        }
-    }
+export function RecordControls(props: {
+  isRecording: boolean; elapsed: number; disabled: boolean;
+  onStart: () => void; onStop: () => void;
+}) {
+  return (
+    <div className="controls">
+      <button
+        className={props.isRecording ? "btn stop" : "btn record"}
+        disabled={props.disabled && !props.isRecording}
+        onClick={props.isRecording ? props.onStop : props.onStart}>
+        {props.isRecording ? "Parar" : "Gravar"}
+      </button>
+      {props.isRecording && <span className="timer">{formatElapsed(props.elapsed)}</span>}
+    </div>
+  );
 }
 ```
 
-- [ ] **Step 5: Reescrever `ContentView`**
+`src/components/RecordingsList.tsx`:
+```tsx
+import type { RecordingResult } from "../lib/api";
+import { fileName, formatElapsed } from "../lib/format";
+import { revealInFolder } from "../lib/api";
 
-```swift
-import SwiftUI
-
-struct ContentView: View {
-    @StateObject private var vm = RecorderViewModel()
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            HStack {
-                Image(systemName: "record.circle").foregroundStyle(.red)
-                Text("OpenRecorder").font(.title.bold())
-            }
-
-            if !vm.screenPermissionGranted {
-                HStack {
-                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow)
-                    Text("Permissão de Gravação de Tela necessária.")
-                    Button("Abrir Ajustes") {
-                        PermissionService.openSettings(for: .screenRecording)
-                    }
-                }
-            }
-
-            SourcePickerView(vm: vm)
-            RecordingControlsView(vm: vm)
-            Divider()
-            RecordingsListView(vm: vm)
-            Spacer()
-
-            if let error = vm.errorMessage {
-                Text(error).foregroundStyle(.red).font(.caption)
-            }
-        }
-        .padding(24)
-        .task { await vm.refreshSources() }
-    }
+export function RecordingsList(props: { items: RecordingResult[] }) {
+  if (props.items.length === 0) return <p className="muted">Nenhuma gravação ainda.</p>;
+  return (
+    <ul className="recordings">
+      {props.items.map((r) => (
+        <li key={r.video_path}>
+          <span>{fileName(r.video_path)}</span>
+          <span className="muted">{formatElapsed(r.duration_ms)}</span>
+          <button className="btn small" onClick={() => revealInFolder(r.video_path)}>Mostrar</button>
+        </li>
+      ))}
+    </ul>
+  );
 }
 ```
 
-- [ ] **Step 6: Buildar e abrir o app**
+- [ ] **Step 3: Reescrever `App.tsx`**
 
-Run:
-```bash
-cd ~/Github/open-recorder && xcodegen generate && xcodebuild build -scheme OpenRecorder -destination 'platform=macOS' -derivedDataPath build 2>&1 | tail -10 && open build/Build/Products/Debug/OpenRecorder.app
+```tsx
+import { useRecorder } from "./state/useRecorder";
+import { SourcePicker } from "./components/SourcePicker";
+import { MicPicker } from "./components/MicPicker";
+import { RecordControls } from "./components/RecordControls";
+import { RecordingsList } from "./components/RecordingsList";
+import "./App.css";
+
+export default function App() {
+  const r = useRecorder();
+  return (
+    <main className="app">
+      <h1>● OpenRecorder</h1>
+      <SourcePicker displays={r.displays} windows={r.windows}
+                    value={r.selectedId} onChange={r.setSelectedId} />
+      <MicPicker mics={r.mics} value={r.selectedMic} onChange={r.setSelectedMic} />
+      <RecordControls isRecording={r.isRecording} elapsed={r.elapsed}
+                      disabled={!r.selectedId} onStart={r.start} onStop={r.stop} />
+      <hr />
+      <h2>Gravações</h2>
+      <RecordingsList items={r.recordings} />
+      {r.error && <p className="error">{r.error}</p>}
+    </main>
+  );
+}
 ```
-Expected: `** BUILD SUCCEEDED **` e o app abre mostrando seletor de fonte, mic e botão Gravar.
 
-- [ ] **Step 7: Rodar a suíte completa de testes**
+- [ ] **Step 4: Estilo mínimo em `App.css`**
 
-Run:
-```bash
-cd ~/Github/open-recorder && xcodebuild test -scheme OpenRecorder -destination 'platform=macOS' 2>&1 | tail -20
-```
-Expected: `** TEST SUCCEEDED **` (todos os testes unitários; smoke pode pular sem permissão).
+Substituir o conteúdo de `src/App.css` por estilos básicos limpos (container centrado, campos, botão record vermelho / stop cinza, `.muted`, `.error` vermelho, `.timer` monoespaçado). Manter enxuto.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 5: Build + testes**
+
+Run: `pnpm build 2>&1 | tail -5 && pnpm test 2>&1 | tail -5 && cd src-tauri && cargo test 2>&1 | tail -5`
+Expected: front buildou; vitest ok; cargo testes ok.
+
+- [ ] **Step 6: Smoke manual fim-a-fim (precisa de você)**
+
+Run: `pnpm tauri dev` (abre a janela do app).
+Conceder permissões quando o SO pedir (macOS: Gravação de Tela + Microfone + Monitoramento de Entrada; reabrir app após conceder).
+Verificar: lista telas/mic → Gravar → clicar pela tela ~10s → Parar → gravação aparece na lista → "Mostrar" abre a pasta → `.mp4` reproduz com vídeo+áudio → `.metadata.json` tem `version:1` + `events` com cliques.
+
+- [ ] **Step 7: Commit**
 
 ```bash
 cd ~/Github/open-recorder && git add -A && \
 git -c user.name="Hudson Brendon" -c user.email="contato.hudsonbrendon@gmail.com" \
-commit -m "feat: add SwiftUI UI and view model for end-to-end recording"
+commit -m "feat: add React UI and recorder state hook for end-to-end recording"
 ```
 
 ---
 
-## Task 15: Smoke test manual + README
+## Task 13: Smoke checklist + README
 
 **Files:**
-- Create: `docs/SMOKE-TEST.md`
-- Create: `README.md`
+- Create: `docs/SMOKE-TEST.md`, `README.md`
 
 **Interfaces:**
 - Consumes: tudo.
-- Produces: checklist de verificação manual + documentação inicial.
+- Produces: checklist manual + documentação.
 
 - [ ] **Step 1: Escrever `docs/SMOKE-TEST.md`**
 
-```markdown
-# OpenRecorder — Smoke Test Manual (macOS)
-
-Pré-requisito: conceder permissões em Ajustes do Sistema → Privacidade e Segurança:
-Gravação de Tela, Microfone, Monitoramento de Entrada. Reabrir o app após conceder.
-
-## Roteiro
-
-1. Abrir o app. O seletor lista pelo menos uma tela e janelas abertas.
-2. Selecionar uma tela inteira + um microfone. Clicar "Gravar".
-   - O timer começa a contar.
-3. Durante ~10s: clicar em vários pontos da tela e mover o mouse.
-4. Clicar "Parar".
-5. A gravação aparece na lista. Clicar "Mostrar" → abre no Finder.
-6. Abrir o `.mp4`: deve reproduzir vídeo + áudio do mic.
-7. Abrir o `.metadata.json` ao lado: deve conter `version: 1`, dados de
-   `recording`, `source`, e um array `events` com cliques/movimentos
-   (coordenadas dentro do tamanho da fonte).
-
-## Casos a verificar
-
-- [ ] Tela inteira grava vídeo + áudio.
-- [ ] Janela específica grava só a janela.
-- [ ] metadata.json tem eventos de clique com coords plausíveis.
-- [ ] Sem permissão de Monitoramento de Entrada: vídeo grava, events fica vazio (degrada).
-- [ ] Sem mic selecionado/permitido: vídeo grava sem trilha de áudio.
-- [ ] Parar e regravar várias vezes não trava o app.
-```
+Checklist de verificação manual por SO (gravar tela inteira, janela; mic on/off; conferir `.mp4` e `.metadata.json`; sem permissão de input → events vazio degrada; regravar várias vezes sem travar). Itens em checkbox.
 
 - [ ] **Step 2: Escrever `README.md`**
 
-```markdown
-# OpenRecorder
+Descrição (gravador open-source cross-platform, zoom-no-clique + 9:16), status F1, requisitos (Rust, Node/pnpm, ffmpeg no PATH), comandos (`pnpm install`, `pnpm tauri dev`, `pnpm test`, `cargo test`), permissões por SO, roadmap F2–F4, licença MIT (a definir).
 
-Gravador de tela open source para macOS, com foco em zoom automático no clique
-e export em 9:16 para redes sociais. Nativo (Swift/SwiftUI + ScreenCaptureKit +
-AVFoundation), leve, sem dependências externas de runtime.
+- [ ] **Step 3: Executar o smoke (`docs/SMOKE-TEST.md`)**
 
-> Status: **F1 (fundação de captura)**. Grava tela/janela/região + microfone →
-> `.mp4` + `metadata.json` de cliques. Zoom e export 9:16 vêm nas próximas fases.
-
-## Requisitos
-
-- macOS 13.0+
-- Xcode 15+ e [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`)
-
-## Build
-
-```bash
-xcodegen generate
-xcodebuild build -scheme OpenRecorder -destination 'platform=macOS'
-```
-
-## Testes
-
-```bash
-xcodebuild test -scheme OpenRecorder -destination 'platform=macOS'
-```
-
-## Permissões
-
-OpenRecorder precisa de Gravação de Tela, Microfone e Monitoramento de Entrada
-(para registrar cliques). Conceda em Ajustes do Sistema → Privacidade e Segurança.
-
-## Roadmap
-
-- **F2** — Auto-zoom no clique + editor mínimo
-- **F3** — Overlay de webcam
-- **F4** — Export 9:16 (full / split-screen) + preview Instagram/TikTok
-
-## Licença
-
-MIT (a definir no arquivo LICENSE).
-```
-
-- [ ] **Step 3: Executar o smoke test manual**
-
-Seguir `docs/SMOKE-TEST.md` integralmente. Marcar cada caso. Corrigir o que falhar (volta à task correspondente).
+Seguir o checklist; corrigir o que falhar (voltando à task correspondente).
 
 - [ ] **Step 4: Commit**
 
 ```bash
 cd ~/Github/open-recorder && git add -A && \
 git -c user.name="Hudson Brendon" -c user.email="contato.hudsonbrendon@gmail.com" \
-commit -m "docs: add manual smoke test checklist and README"
+commit -m "docs: add smoke test checklist and README"
 ```
 
 ---
 
-## Self-Review (preenchido pelo autor do plano)
+## Self-Review (autor do plano)
 
 **1. Cobertura do spec:**
-- Captura tela/janela/região → Tasks 8, 9 (SourceEnumerator, CaptureEngine; região via `sourceRect`).
-- Microfone → Task 10 (AudioRecorder).
-- Metadata de cliques/mouse → Tasks 2, 5, 12 (modelo, InputRecorder, finalizer).
-- Gravação não-destrutiva (mp4 + metadata.json) → Tasks 6/7 (writer), 12 (metadata), 13 (coordenação).
-- Comandos/fluxo UI ↔ core → Tasks 13, 14.
-- Permissões macOS → Task 11 + avisos na UI (Task 14).
-- Tratamento de erros → `onStreamError`, `errorMessage`, degradação sem input/mic (Tasks 9, 13, 14).
-- Testes (unit + integração writer + smoke manual) → Tasks 2–7, 11–13 (unit/integração); 8, 9, 15 (smoke).
-- Sem gap identificado para o escopo da F1.
+- Captura tela/janela/região → Tasks 8, 9 (source_enum, video_capture; região via rect).
+- Microfone → Task 9 (audio_capture/cpal).
+- Metadata cliques/mouse → Tasks 2, 5, 6 (modelo, input buffer, finalizer).
+- Não-destrutiva (mp4 + metadata.json) → Tasks 4/7/9 (encode/ffmpeg), 6 (metadata), 10 (coordenação).
+- Comandos Tauri / fluxo UI ↔ core → Tasks 10, 11, 12.
+- Permissões → checagens em `scap`/`ensure_ffmpeg` + avisos UI (Tasks 7, 8, 12).
+- Tratamento de erros → `Result<_, String>` em todos os comandos, degradação sem input/mic (Tasks 9, 10, 12).
+- Testes → unit (`cargo test`) Tasks 2–7; vitest Task 11; smoke manual Tasks 8, 9, 12, 13.
+- Sem gap para o escopo F1.
 
-**2. Placeholders:** nenhum "TBD/TODO"; todo passo de código traz o código. Smoke manual é explícito (não é placeholder, é o método de teste correto para captura dependente de hardware).
+**2. Placeholders:** sem "TBD". Tasks de integração (8, 9) trazem código-esboço concreto com instrução explícita de ajustar à API real do crate `scap`/`cpal` e reportar DONE_WITH_CONCERNS se divergir — risco conhecido, não placeholder.
 
-**3. Consistência de tipos:** `CaptureSource`, `RecordingMetadata`/`RecordingInfo`/`SourceInfo`/`InputEvent`, `VideoWriter(...hasAudio:)`, `RecordingResult`, `InputRecorder.ingest(...)`, `RecordingFinalizer.metadata/write`, `RecordingCoordinator.makeFilenames` — nomes e assinaturas batem entre tarefas produtoras e consumidoras.
+**3. Consistência de tipos:** `RecordingMetadata`/`InputEvent` (campo `kind`→`"type"`), `CaptureSource`/`SourceKind.as_str`, `map_to_source`, `SourceOption`, `RecordingResult`, `make_filenames`, comandos Tauri ↔ `api.ts` (snake_case nos campos do payload). Nomes batem entre produtores/consumidores.
 
-**Limitação conhecida (documentada, fora do escopo F1):** sincronização fina de timestamps entre o relógio do ScreenCaptureKit (vídeo) e o do AVCaptureSession (mic) usa o PTS de cada buffer; pequeno drift é aceitável na F1 e será endereçado se necessário em fase futura.
+**Riscos conhecidos (documentados):**
+- API de `scap`/`cpal` pode divergir do esboço (Tasks 8, 9) — implementer verifica no crate real.
+- `rdev::listen` é global/bloqueante; se a integração travar, entregar vídeo+áudio e degradar input (events vazio) com DONE_WITH_CONCERNS.
+- Sincronização fina vídeo/áudio: muxer junta por timestamp do container; pequeno drift aceitável em F1.
+- ffmpeg via PATH no F1 (sidecar empacotado fica para fase de distribuição).
 ```
