@@ -23,28 +23,17 @@ pub struct VideoCapture {
     stop_tx: mpsc::Sender<()>,
     handle: Option<JoinHandle<()>>,
     ffmpeg: Child,
+    width: u32,
+    height: u32,
 }
 
 impl VideoCapture {
     /// Start capturing `source` at `fps`, encoding to `video_tmp` via ffmpeg.
     ///
     /// Uses scap BGRA frames piped to ffmpeg stdin as raw video.
-    /// `source.rect[2]` = width, `source.rect[3]` = height (logical pixels).
+    /// Frame dimensions are derived from `capturer.get_output_frame_size()`, not
+    /// from `source.rect`, so window sources (where rect is [0,0,0,0]) work correctly.
     pub fn start(source: &CaptureSource, fps: u32, video_tmp: &Path) -> Result<Self, String> {
-        let [_x, _y, w, h] = source.rect;
-        let width = w as u32;
-        let height = h as u32;
-
-        let args = encode_args(width, height, fps, video_tmp.to_str().ok_or("invalid path")?);
-        let mut ffmpeg = Command::new(ffmpeg_binary())
-            .args(&args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| format!("failed to start ffmpeg: {e}"))?;
-        let mut stdin = ffmpeg.stdin.take().ok_or("ffmpeg has no stdin")?;
-
         // Resolve scap target: Window matched by id, Display/Region → primary (None).
         let scap_target = if source.kind == SourceKind::Window {
             if let Ok(window_id) = source.id.parse::<u32>() {
@@ -72,6 +61,21 @@ impl VideoCapture {
             ..Default::default()
         })
         .map_err(|e| format!("scap build error: {e}"))?;
+
+        // Derive real frame dimensions from the capturer (works for window and display
+        // sources). Must be called before start_capture so the engine can query
+        // the OS for the actual output size.
+        let [width, height] = capturer.get_output_frame_size();
+
+        let args = encode_args(width, height, fps, video_tmp.to_str().ok_or("invalid path")?);
+        let mut ffmpeg = Command::new(ffmpeg_binary())
+            .args(&args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("failed to start ffmpeg: {e}"))?;
+        let mut stdin = ffmpeg.stdin.take().ok_or("ffmpeg has no stdin")?;
 
         capturer.start_capture();
 
@@ -104,7 +108,18 @@ impl VideoCapture {
             stop_tx,
             handle: Some(handle),
             ffmpeg,
+            width,
+            height,
         })
+    }
+
+    /// Return the (width, height) actually used for encoding.
+    ///
+    /// Derived from `capturer.get_output_frame_size()` at start time, so this
+    /// reflects real frame dimensions even for window sources where `source.rect`
+    /// is `[0,0,0,0]`.
+    pub fn dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
     }
 
     /// Signal the capture thread to stop, wait for it, then wait for ffmpeg to finish.
