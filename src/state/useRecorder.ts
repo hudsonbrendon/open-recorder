@@ -27,6 +27,12 @@ export function useRecorder() {
 
   useEffect(() => { refresh(); }, [refresh]);
 
+  useEffect(() => {
+    return () => {
+      if (timer.current) { clearInterval(timer.current); timer.current = null; }
+    };
+  }, []);
+
   const allSources = [...displays, ...windows];
   const selected = allSources.find((x) => x.id === selectedId) ?? null;
 
