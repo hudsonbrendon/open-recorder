@@ -4,6 +4,34 @@ use tauri::State;
 use crate::capture::audio_capture;
 use crate::capture::source_enum::{self, SourceOption};
 use crate::recording::coordinator::{Coordinator, RecordingResult};
+use crate::model::metadata::RecordingMetadata;
+use crate::model::zoom::ZoomModel;
+use crate::zoom::{store, generate::{generate, GenOpts}};
+
+#[derive(serde::Serialize)]
+pub struct LoadedRecording {
+    pub metadata: RecordingMetadata,
+    pub zoom: ZoomModel,
+}
+
+fn metadata_path(video_path: &str) -> std::path::PathBuf {
+    std::path::Path::new(video_path).with_extension("metadata.json")
+}
+
+#[tauri::command]
+pub fn load_recording(video_path: String) -> Result<LoadedRecording, String> {
+    let mtxt = std::fs::read_to_string(metadata_path(&video_path))
+        .map_err(|e| format!("metadata não encontrada: {e}"))?;
+    let metadata: RecordingMetadata = serde_json::from_str(&mtxt).map_err(|e| e.to_string())?;
+    let zoom = store::load(&video_path)
+        .unwrap_or_else(|| generate(&metadata.events, metadata.source.rect, &GenOpts::default()));
+    Ok(LoadedRecording { metadata, zoom })
+}
+
+#[tauri::command]
+pub fn save_zoom(video_path: String, zoom: ZoomModel) -> Result<(), String> {
+    store::save(&video_path, &zoom)
+}
 
 #[derive(serde::Serialize)]
 pub struct SourcesPayload {
