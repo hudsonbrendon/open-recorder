@@ -35,10 +35,9 @@ Manual verification checklist for the capture foundation (F1) on macOS. Follow e
 - [ ] Open `REC-*.metadata.json` in a text editor
 - [ ] Check structure contains:
   - `"version": 1`
-  - `"recording": { "start_ts": "...", "end_ts": "...", "duration_ms": ... }`
-  - `"source": { "kind": "FullScreen", "display_id": ... }`
-  - `"audio": { "channels": 2, "sample_rate": 48000 }`
-  - `"events": [ { "type": "...", "ts": ..., ... }, ... ]` (event array, may be empty if Input Monitoring denied)
+  - `"recording": { "width": ..., "height": ..., "fps": ..., "duration_ms": ... }`
+  - `"source": { "type": "display" (or "window"/"region"), "id": "...", "rect": [x, y, width, height] }`
+  - `"events": [ { "t_ms": ..., "type": "click" or "move", "x": ..., "y": ..., "button": "left"/"right" (for clicks only) }, ... ]` (event array, may be empty if Input Monitoring denied)
 
 ## Test 4: Window Capture
 
@@ -60,7 +59,7 @@ Manual verification checklist for the capture foundation (F1) on macOS. Follow e
 - [ ] Click **Stop Recording**
 - [ ] Open `REC-*.mp4` in QuickTime
 - [ ] Verify video plays: no audio track (silent)
-- [ ] Open `REC-*.metadata.json`: confirm `"audio"` object is still present, sample_rate matches (no audio frames written)
+- [ ] Open `REC-*.metadata.json`: confirm structure is intact (metadata reflects recording parameters)
 
 ## Test 6: Input Monitoring Not Granted
 
@@ -85,7 +84,7 @@ Manual verification checklist for the capture foundation (F1) on macOS. Follow e
 
 ## Test 8: Folder Opening
 
-- [ ] In the recording list, click **Mostrar** (Show) button next to any recording
+- [ ] In the recording list, click **Show** button next to any recording
 - [ ] Verify Finder opens to `~/Movies/OpenRecorder` with that file highlighted
 - [ ] Confirm folder is not empty and contains all test recordings
 

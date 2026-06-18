@@ -72,7 +72,7 @@ cd src-tauri && cargo test
 ```bash
 # Create production app bundle
 pnpm tauri build
-# Output: dist/OpenRecorder.app (or .msi on Windows)
+# Output: src-tauri/target/release/bundle/ (macOS .app, Windows .msi, Linux .deb, etc.)
 ```
 
 ## How It Works
@@ -93,35 +93,37 @@ Recordings are saved to **`~/Movies/OpenRecorder/`** (macOS):
   {
     "version": 1,
     "recording": {
-      "start_ts": "2024-01-15T10:30:45.123Z",
-      "end_ts": "2024-01-15T10:30:55.456Z",
-      "duration_ms": 10333
+      "width": 2560,
+      "height": 1440,
+      "fps": 30,
+      "duration_ms": 18450
     },
     "source": {
-      "kind": "FullScreen",
-      "display_id": 1
-    },
-    "audio": {
-      "channels": 2,
-      "sample_rate": 48000
+      "type": "display",
+      "id": "1",
+      "rect": [0, 0, 2560, 1440]
     },
     "events": [
       {
-        "type": "MouseMove",
-        "ts": 150,
-        "x": 512,
-        "y": 384
+        "t_ms": 1200,
+        "type": "click",
+        "x": 840,
+        "y": 410,
+        "button": "left"
       },
       {
-        "type": "MouseClick",
-        "ts": 250,
-        "button": "Left",
-        "x": 512,
-        "y": 384
+        "t_ms": 1300,
+        "type": "move",
+        "x": 845,
+        "y": 412
       }
     ]
   }
   ```
+  **Key fields:**
+  - `recording`: width/height (pixels), fps, duration_ms
+  - `source.type`: "display", "window", or "region"; `id` is a string; `rect` is [x, y, width, height]
+  - `events`: optional (empty if Input Monitoring not granted); `t_ms` is milliseconds, `type` is "click" or "move", and `button` is present only for clicks ("left" or "right")
 
 ## Known Limitations (F1)
 
