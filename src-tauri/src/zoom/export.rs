@@ -52,10 +52,13 @@ pub fn build_zoompan_expr(model: &ZoomModel, fps: u32) -> (String, String, Strin
     let cx_expr = center_expr(model, fps, true);
     let cy_expr = center_expr(model, fps, false);
 
-    // x = iw*cx - (iw/zoom)/2  — top-left corner of the zoom window in source
-    // y = ih*cy - (ih/zoom)/2
-    let x = format!("iw*{cx_expr}-(iw/zoom/2)");
-    let y = format!("ih*{cy_expr}-(ih/zoom/2)");
+    // Clamp the raw center c to [0.5/zoom, 1-0.5/zoom] (scale-dependent, matches preview).
+    // This mirrors the Rust zoom_at / TS zoomAt: m = 0.5/scale_t; cx = clamp(tx, m, 1-m).
+    // zoompan's `zoom` variable holds the current eased scale for this frame.
+    // x = iw * clamp(cx, 0.5/zoom, 1-0.5/zoom) - (iw/zoom)/2
+    // y = ih * clamp(cy, 0.5/zoom, 1-0.5/zoom) - (ih/zoom)/2
+    let x = format!("iw*max(0.5/zoom,min({cx_expr},1-0.5/zoom))-(iw/zoom/2)");
+    let y = format!("ih*max(0.5/zoom,min({cy_expr},1-0.5/zoom))-(ih/zoom/2)");
 
     (z, x, y)
 }
@@ -204,6 +207,11 @@ mod tests {
         // x and y reference input dimensions
         assert!(x.contains("iw"), "x should reference iw: {x}");
         assert!(y.contains("ih"), "y should reference ih: {y}");
+        // x and y clamp center using scale-dependent bounds (matches preview)
+        assert!(x.contains("0.5/zoom"), "x should clamp with 0.5/zoom: {x}");
+        assert!(x.contains("1-0.5/zoom"), "x should clamp with 1-0.5/zoom: {x}");
+        assert!(y.contains("0.5/zoom"), "y should clamp with 0.5/zoom: {y}");
+        assert!(y.contains("1-0.5/zoom"), "y should clamp with 1-0.5/zoom: {y}");
         // Default case (outside all segments) produces 1
         assert!(z.contains("1"), "z should fall back to 1: {z}");
     }

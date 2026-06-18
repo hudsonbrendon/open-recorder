@@ -140,6 +140,10 @@ Recordings are saved to **`~/Movies/OpenRecorder/`** (macOS):
 - **Click event coordinates:** Resolved in F2 — real pixel coordinates captured via the native macOS event tap.
 - **ffmpeg Bundling:** The app requires `ffmpeg` on PATH. Bundled sidecar is planned for distribution phase.
 
+## Known Limitations (F2)
+
+- **Auto-zoom click targeting (capture source):** Auto-zoom click targeting is accurate for **full-screen primary-display capture only**. For window or region capture sources the `source.rect` can be `[0, 0, 0, 0]` and the native CGEventTap reports global screen coordinates, so the auto-zoom focus point may not align with the correct location in the captured frame. Full-screen primary display capture is the supported and tested path for F2 auto-zoom.
+
 ## Troubleshooting
 
 ### "Screen Recording permission denied"

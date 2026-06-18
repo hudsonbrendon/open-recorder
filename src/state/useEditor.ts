@@ -8,6 +8,7 @@ export function useEditor(videoPath: string) {
   const [selected, setSelected] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const saveTimer = useRef<number | null>(null);
+  const latestModelRef = useRef<ZoomModel>({ version: 1, segments: [] });
 
   useEffect(() => {
     let cancelled = false;
@@ -17,6 +18,7 @@ export function useEditor(videoPath: string) {
         if (!cancelled) {
           setMetadata(r.metadata);
           setModelState(r.zoom);
+          latestModelRef.current = r.zoom;
         }
       })
       .catch((e) => {
@@ -30,6 +32,7 @@ export function useEditor(videoPath: string) {
   const setModel = useCallback(
     (m: ZoomModel) => {
       setModelState(m);
+      latestModelRef.current = m;
       if (saveTimer.current) clearTimeout(saveTimer.current);
       saveTimer.current = window.setTimeout(() => {
         api.saveZoom(videoPath, m).catch((e) => setError(String(e)));
@@ -40,9 +43,13 @@ export function useEditor(videoPath: string) {
 
   useEffect(() => {
     return () => {
-      if (saveTimer.current) clearTimeout(saveTimer.current);
+      if (saveTimer.current) {
+        clearTimeout(saveTimer.current);
+        // Flush the pending save so edits made <500ms before unmount are not lost.
+        api.saveZoom(videoPath, latestModelRef.current).catch(() => {});
+      }
     };
-  }, []);
+  }, [videoPath]);
 
   return { metadata, model, setModel, selected, setSelected, error };
 }

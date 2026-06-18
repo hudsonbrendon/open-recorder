@@ -138,6 +138,10 @@ Manual verification checklist for the auto-zoom editor (F2) on macOS. Follow eac
 - [ ] **ffmpeg syntax:** Verify zoompan filter `s=<scale>:x=<pan_x>:y=<pan_y>` is correctly formatted in export command
   - Check Console.app logs if export fails
 
+### Known Limitation: Auto-Zoom Click Targeting (Capture Source)
+
+Auto-zoom click targeting is accurate for **full-screen primary-display capture only**. For window or region capture sources the `source.rect` can be `[0, 0, 0, 0]` and the native CGEventTap reports global screen coordinates, so the auto-zoom focus point may not align with the correct location in the captured frame. Full-screen primary display capture is the supported and tested path for F2 auto-zoom.
+
 ## Post-Test Summary
 
 - [ ] All recordings with clicks show auto-zoom segments in editor
