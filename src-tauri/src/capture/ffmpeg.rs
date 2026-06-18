@@ -1,7 +1,16 @@
 // preenchido na Task 4
+use std::process::Command;
 
 pub fn ffmpeg_binary() -> String {
     "ffmpeg".to_string()
+}
+
+pub fn ensure_ffmpeg() -> Result<(), String> {
+    match Command::new(ffmpeg_binary()).arg("-version").output() {
+        Ok(out) if out.status.success() => Ok(()),
+        Ok(_) => Err("ffmpeg encontrado mas retornou erro ao executar -version".into()),
+        Err(_) => Err("ffmpeg não encontrado no PATH. Instale o ffmpeg para gravar.".into()),
+    }
 }
 
 /// Args para encodar BGRA cru lido do stdin em H.264 mp4.
@@ -53,5 +62,14 @@ mod tests {
         let inputs: Vec<_> = a.windows(2).filter(|w| w[0] == "-i").map(|w| w[1].clone()).collect();
         assert_eq!(inputs, vec!["/tmp/v.mp4", "/tmp/a.wav"]);
         assert_eq!(a.last().unwrap(), "/tmp/out.mp4");
+    }
+
+    #[test]
+    fn ensure_ffmpeg_returns_result() {
+        // Não assume ffmpeg instalado no CI; só garante que retorna sem panicar
+        // e que, se erro, a mensagem menciona ffmpeg.
+        if let Err(msg) = ensure_ffmpeg() {
+            assert!(msg.to_lowercase().contains("ffmpeg"), "{msg}");
+        }
     }
 }
