@@ -88,3 +88,18 @@ pub fn reveal_in_folder(path: String) -> Result<(), String> {
     let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
     Ok(())
 }
+
+#[tauri::command]
+pub fn export_with_zoom(
+    app: tauri::AppHandle,
+    video_path: String,
+    zoom: crate::model::zoom::ZoomModel,
+    out_path: String,
+    fps: u32,
+    total_ms: u64,
+) -> Result<(), String> {
+    use tauri::Emitter;
+    crate::zoom::export::export(&video_path, &zoom, &out_path, fps, total_ms, |p| {
+        let _ = app.emit("export-progress", p);
+    })
+}

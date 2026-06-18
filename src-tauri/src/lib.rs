@@ -19,6 +19,7 @@ pub fn run() {
             crate::commands::reveal_in_folder,
             crate::commands::load_recording,
             crate::commands::save_zoom,
+            crate::commands::export_with_zoom,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
