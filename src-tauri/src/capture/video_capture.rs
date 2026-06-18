@@ -52,20 +52,40 @@ impl VideoCapture {
             None // primary display
         };
 
-        let mut capturer = scap::capturer::Capturer::build(scap::capturer::Options {
-            fps,
-            target: scap_target,
-            show_cursor: true,
-            output_type: scap::frame::FrameType::BGRAFrame,
-            output_resolution: scap::capturer::Resolution::Captured,
-            ..Default::default()
-        })
-        .map_err(|e| format!("scap build error: {e}"))?;
+        // scap can panic internally (it unwraps) when the OS capture session
+        // fails to build/start — e.g. screen-recording permission that needs an
+        // app relaunch to take effect, or a window that can't be captured on this
+        // macOS version. Catch the panic so it becomes a clean error instead of
+        // aborting the whole app.
+        let perm_hint = "Não foi possível iniciar a captura de tela. \
+Se você acabou de conceder a permissão de Gravação de Tela, saia do app (Cmd+Q) e abra de novo. \
+Para uma janela específica, tente capturar a tela inteira.";
+
+        let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            scap::capturer::Capturer::build(scap::capturer::Options {
+                fps,
+                target: scap_target,
+                show_cursor: true,
+                output_type: scap::frame::FrameType::BGRAFrame,
+                output_resolution: scap::capturer::Resolution::Captured,
+                ..Default::default()
+            })
+        }));
+        let mut capturer = match built {
+            Ok(Ok(c)) => c,
+            Ok(Err(e)) => return Err(format!("scap build error: {e}")),
+            Err(_) => return Err(perm_hint.to_string()),
+        };
 
         // Derive real frame dimensions from the capturer (works for window and display
         // sources). Must be called before start_capture so the engine can query
         // the OS for the actual output size.
-        let [width, height] = capturer.get_output_frame_size();
+        let [width, height] = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            capturer.get_output_frame_size()
+        })) {
+            Ok(dims) => dims,
+            Err(_) => return Err(perm_hint.to_string()),
+        };
 
         let args = encode_args(width, height, fps, video_tmp.to_str().ok_or("invalid path")?);
         let mut ffmpeg = Command::new(ffmpeg_binary())
@@ -77,7 +97,14 @@ impl VideoCapture {
             .map_err(|e| format!("failed to start ffmpeg: {e}"))?;
         let mut stdin = ffmpeg.stdin.take().ok_or("ffmpeg has no stdin")?;
 
-        capturer.start_capture();
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| capturer.start_capture()))
+            .is_err()
+        {
+            // Capture failed to start; tear down the ffmpeg we just spawned.
+            let _ = ffmpeg.kill();
+            let _ = ffmpeg.wait();
+            return Err(perm_hint.to_string());
+        }
 
         let (stop_tx, stop_rx) = mpsc::channel::<()>();
         let handle = std::thread::spawn(move || {
