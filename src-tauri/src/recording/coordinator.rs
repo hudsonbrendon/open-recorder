@@ -123,6 +123,7 @@ fn spawn_rdev_listener() -> RdevHandle {
                         rdev::Button::Middle => "middle",
                         rdev::Button::Unknown(_) => "unknown",
                     };
+                    // NOTE: rdev ButtonPress carries no coordinates; (0,0) is a placeholder until correlated with the last MouseMove.
                     let _ = tx.send((0, 0, "click".to_string(), Some(label.to_string()), now));
                 }
                 _ => {}
@@ -207,35 +208,65 @@ impl Coordinator {
         let mut a = self.active.take().ok_or("no active recording")?;
         let duration_ms = now_ms().saturating_sub(a.start_ms);
 
+        // Capture temp paths up front so we can always clean them up on error.
+        let video_tmp = a.video_tmp.clone();
+        let audio_tmp = a.audio_tmp.clone();
+
+        // Helper: remove both temp files, ignoring errors (best-effort cleanup).
+        let cleanup_temps = |vtmp: &PathBuf, atmp: &PathBuf| {
+            let _ = std::fs::remove_file(vtmp);
+            let _ = std::fs::remove_file(atmp);
+        };
+
         // Disable rdev ingestion and drain remaining messages.
         if let Some(ref h) = self.rdev {
             h.recording.store(false, Ordering::Relaxed);
             drain_rdev(h, &mut a.input);
         }
 
-        // Stop captures.
+        // Stop captures; clean up temp files if either fails.
         if let Some(v) = a.video.take() {
-            v.stop()?;
+            if let Err(e) = v.stop() {
+                cleanup_temps(&video_tmp, &audio_tmp);
+                return Err(e);
+            }
         }
         if let Some(au) = a.audio.take() {
-            au.stop()?;
+            if let Err(e) = au.stop() {
+                cleanup_temps(&video_tmp, &audio_tmp);
+                return Err(e);
+            }
         }
 
-        // Mux or rename.
+        // Mux or rename; clean up temp files on any error.
         if a.has_audio {
             let args = ffmpeg::mux_args(
-                a.video_tmp.to_str().unwrap_or_default(),
-                a.audio_tmp.to_str().unwrap_or_default(),
+                video_tmp.to_str().unwrap_or_default(),
+                audio_tmp.to_str().unwrap_or_default(),
                 a.out_video.to_str().unwrap_or_default(),
             );
-            Command::new(ffmpeg::ffmpeg_binary())
+            let output = Command::new(ffmpeg::ffmpeg_binary())
                 .args(&args)
                 .output()
-                .map_err(|e| format!("mux failed: {e}"))?;
-            let _ = std::fs::remove_file(&a.video_tmp);
-            let _ = std::fs::remove_file(&a.audio_tmp);
+                .map_err(|e| {
+                    cleanup_temps(&video_tmp, &audio_tmp);
+                    format!("mux failed: {e}")
+                })?;
+            if !output.status.success() {
+                cleanup_temps(&video_tmp, &audio_tmp);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(format!(
+                    "mux falhou: ffmpeg saiu com status {}; stderr: {}",
+                    output.status, stderr
+                ));
+            }
+            let _ = std::fs::remove_file(&video_tmp);
+            let _ = std::fs::remove_file(&audio_tmp);
         } else {
-            std::fs::rename(&a.video_tmp, &a.out_video).map_err(|e| e.to_string())?;
+            std::fs::rename(&video_tmp, &a.out_video).map_err(|e| {
+                cleanup_temps(&video_tmp, &audio_tmp);
+                e.to_string()
+            })?;
         }
 
         let events = a.input.take_events();
