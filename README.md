@@ -6,7 +6,7 @@ An open-source, cross-platform screen recorder built with **Tauri 2** (Rust core
 
 **Foundation (F1):** Screen/window/region capture + microphone + click/mouse event logging.
 
-**F2 (In Progress):** Auto-zoom on click + integrated editor with timeline, live preview, and landscape export with zoom baked in.
+**F2 (implemented — pending manual smoke validation):** Auto-zoom on click + integrated editor with timeline, live preview, and landscape export with zoom baked in.
 - Click detection via native macOS CGEventTap (requires Input Monitoring/Accessibility permission)
 - Auto-zoom segments generated from click events
 - Timeline UI with segment bars, click markers, and playhead
@@ -137,7 +137,7 @@ Recordings are saved to **`~/Movies/OpenRecorder/`** (macOS):
 
 - **Non-Primary Display:** Recordings on secondary displays may fall back to the primary display. Workaround: use Full Screen capture of primary, or record a window instead.
 - **Window Geometry:** Window-only capture is best-effort. Partially off-screen windows will be clipped to available area.
-- **Click Event Precision:** Event coordinates are currently coarse and may serve as placeholders; F2 will refine with precise pixel-level click zones.
+- **Click event coordinates:** Resolved in F2 — real pixel coordinates captured via the native macOS event tap.
 - **ffmpeg Bundling:** The app requires `ffmpeg` on PATH. Bundled sidecar is planned for distribution phase.
 
 ## Troubleshooting

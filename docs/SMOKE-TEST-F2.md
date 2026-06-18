@@ -91,6 +91,7 @@ Manual verification checklist for the auto-zoom editor (F2) on macOS. Follow eac
   - Verify **pan/zoom timing** matches timeline segments
   - Verify **zoom scales** match Inspector values (e.g., 2.0× magnification)
   - Verify **video quality** is H.264 (no corruption, smooth playback)
+  - [ ] **Verify the exported video resolution/aspect ratio matches the source (landscape).** Confirm it is NOT portrait/9:16 (9:16 is a future phase, F4).
 
 ## Test 7: Compare Preview vs. Exported MP4
 
@@ -101,6 +102,7 @@ Manual verification checklist for the auto-zoom editor (F2) on macOS. Follow eac
   - Confirm **scale/magnification matches** in both
 - [ ] Repeat for 2–3 segments
 - [ ] Confirm preview and export are **visually consistent**
+- [ ] **NOTE:** full preview↔export parity holds for single-target zoom segments. For merged/multi-target segments the export pans to the segment's first target only (see Test 10) — a multi-target pan mismatch here is expected, not a failure.
 
 ## Test 8: Record with Input Monitoring Denied
 
@@ -113,7 +115,7 @@ Manual verification checklist for the auto-zoom editor (F2) on macOS. Follow eac
 - [ ] Open editor for this recording
 - [ ] Verify timeline shows **no auto-zoom segments** (events array was empty)
   - Segment Inspector may be blank or disabled
-- [ ] Confirm **manual zoom add is still available** (if UI provides it):
+- [ ] Confirm zooms can still be managed manually via the inspector/timeline:
   - User can manually add segments even without auto-detected clicks
 - [ ] Attempt export: should work without auto-zoom segments (flat video or manual zooms only)
 
