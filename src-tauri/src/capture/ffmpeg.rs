@@ -1,6 +1,22 @@
 use std::process::Command;
 
+/// Resolve the ffmpeg executable. A macOS GUI app launched from Finder does
+/// NOT inherit the shell PATH (it gets a minimal /usr/bin:/bin:...), so a bare
+/// "ffmpeg" lookup misses Homebrew installs. Probe the common absolute paths
+/// first, then fall back to "ffmpeg" (PATH) for CLI/dev runs.
 pub fn ffmpeg_binary() -> String {
+    const CANDIDATES: &[&str] = &[
+        "/opt/homebrew/bin/ffmpeg", // Apple Silicon Homebrew
+        "/usr/local/bin/ffmpeg",    // Intel Homebrew
+        "/opt/local/bin/ffmpeg",    // MacPorts
+        "/usr/bin/ffmpeg",          // system / Linux
+        "/bin/ffmpeg",
+    ];
+    for path in CANDIDATES {
+        if std::path::Path::new(path).exists() {
+            return path.to_string();
+        }
+    }
     "ffmpeg".to_string()
 }
 
@@ -8,7 +24,7 @@ pub fn ensure_ffmpeg() -> Result<(), String> {
     match Command::new(ffmpeg_binary()).arg("-version").output() {
         Ok(out) if out.status.success() => Ok(()),
         Ok(_) => Err("ffmpeg encontrado mas retornou erro ao executar -version".into()),
-        Err(_) => Err("ffmpeg não encontrado no PATH. Instale o ffmpeg para gravar.".into()),
+        Err(_) => Err("ffmpeg não encontrado. Instale o ffmpeg (ex.: brew install ffmpeg) para gravar.".into()),
     }
 }
 
