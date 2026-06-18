@@ -38,7 +38,7 @@ mod tests {
         let model = ZoomModel { version: 1, segments: vec![ZoomSegment {
             start_ms: 0, end_ms: 1000, ease_in_ms: 100, ease_out_ms: 100,
             scale: 2.0, targets: vec![ZoomTarget { t_ms: 0, x: 0.5, y: 0.5 }],
-        }]};
+        }], webcam: None};
         save(video.to_str().unwrap(), &model).unwrap();
         let loaded = load(video.to_str().unwrap()).unwrap();
         assert_eq!(loaded, model);

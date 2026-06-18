@@ -48,7 +48,7 @@ pub fn generate(events: &[InputEvent], source_rect: [i64; 4], opts: &GenOpts) ->
         last_click_t = Some(ev.t_ms);
     }
 
-    ZoomModel { version: 1, segments }
+    ZoomModel { version: 1, segments, webcam: None }
 }
 
 #[cfg(test)]

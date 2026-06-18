@@ -1,4 +1,5 @@
 use serde::{Serialize, Deserialize};
+use crate::model::webcam::WebcamOverlay;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct ZoomTarget {
@@ -21,6 +22,8 @@ pub struct ZoomSegment {
 pub struct ZoomModel {
     pub version: u32,
     pub segments: Vec<ZoomSegment>,
+    #[serde(default)]
+    pub webcam: Option<WebcamOverlay>,
 }
 
 /// Cubic smoothstep with input clamped to [0,1].
@@ -130,6 +133,7 @@ mod tests {
                     y: 0.75,
                 }],
             }],
+            webcam: None,
         };
         let j = serde_json::to_string(&m).unwrap();
         let back: ZoomModel = serde_json::from_str(&j).unwrap();
@@ -151,6 +155,7 @@ mod tests {
                     y: 0.75,
                 }],
             }],
+            webcam: None,
         }
     }
 
@@ -183,5 +188,12 @@ mod tests {
     fn zoom_at_ease_out_mid() {
         let z = zoom_at(&fixture(), 1800); // (2000-1800)/400=0.5 -> 0.5 -> scale 1.5
         assert!(close(z.scale, 1.5));
+    }
+
+    #[test]
+    fn zoom_model_without_webcam_field_deserializes_to_none() {
+        let json = r#"{"version":1,"segments":[]}"#;
+        let m: ZoomModel = serde_json::from_str(json).unwrap();
+        assert!(m.webcam.is_none());
     }
 }

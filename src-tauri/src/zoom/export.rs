@@ -198,6 +198,7 @@ mod tests {
                 scale: 2.0,
                 targets: vec![ZoomTarget { t_ms: 0, x: 0.25, y: 0.75 }],
             }],
+            webcam: None,
         };
         let (z, x, y) = build_zoompan_expr(&m, 30);
         // Expression uses on/fps for time
@@ -218,7 +219,7 @@ mod tests {
 
     #[test]
     fn empty_model_is_identity() {
-        let m = ZoomModel { version: 1, segments: vec![] };
+        let m = ZoomModel { version: 1, segments: vec![], webcam: None };
         let (z, _x, _y) = build_zoompan_expr(&m, 30);
         assert_eq!(z.trim(), "1");
     }
@@ -245,6 +246,7 @@ mod tests {
                     targets: vec![ZoomTarget { t_ms: 2000, x: 0.6, y: 0.7 }],
                 },
             ],
+            webcam: None,
         };
         let (z, x, y) = build_zoompan_expr(&m, 30);
         // Both scales appear
@@ -271,6 +273,7 @@ mod tests {
                 scale: 2.0,
                 targets: vec![],
             }],
+            webcam: None,
         };
         let (z, x, y) = build_zoompan_expr(&m, 30);
         // Should produce a valid expression string without panicking.
@@ -309,6 +312,7 @@ mod tests {
                 scale: 2.0,
                 targets: vec![ZoomTarget { t_ms: 200, x: 0.4, y: 0.4 }],
             }],
+            webcam: None,
         };
 
         let mut last_progress = 0.0_f64;
