@@ -4,5 +4,7 @@
 <dict>
     <key>NSMicrophoneUsageDescription</key>
     <string>OpenRecorder uses the microphone to record narration alongside your screen.</string>
+    <key>NSCameraUsageDescription</key>
+    <string>OpenRecorder uses the camera to record a webcam overlay alongside your screen.</string>
 </dict>
 </plist>
