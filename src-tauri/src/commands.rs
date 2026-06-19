@@ -2,6 +2,7 @@ use std::sync::Mutex;
 use tauri::State;
 
 use crate::capture::audio_capture;
+use crate::capture::webcam_capture;
 use crate::capture::source_enum::{self, SourceOption};
 use crate::recording::coordinator::{Coordinator, RecordingResult};
 use crate::model::metadata::RecordingMetadata;
@@ -45,6 +46,12 @@ pub struct MicOption {
     pub name: String,
 }
 
+#[derive(serde::Serialize)]
+pub struct CameraOption {
+    pub id: String,
+    pub name: String,
+}
+
 #[tauri::command]
 pub fn list_sources() -> Result<SourcesPayload, String> {
     Ok(SourcesPayload {
@@ -62,13 +69,22 @@ pub fn list_microphones() -> Vec<MicOption> {
 }
 
 #[tauri::command]
+pub fn list_cameras() -> Vec<CameraOption> {
+    webcam_capture::list_cameras()
+        .into_iter()
+        .map(|(id, name)| CameraOption { id, name })
+        .collect()
+}
+
+#[tauri::command]
 pub fn start_recording(
     state: State<'_, Mutex<Coordinator>>,
     source: SourceOption,
     mic_id: Option<String>,
+    camera_id: Option<String>,
 ) -> Result<(), String> {
     let cs = source_enum::to_capture_source(&source);
-    state.lock().unwrap().start(cs, mic_id, 30)
+    state.lock().unwrap().start(cs, mic_id, camera_id, 30)
 }
 
 #[tauri::command]

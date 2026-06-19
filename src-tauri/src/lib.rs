@@ -15,6 +15,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             crate::commands::list_sources,
             crate::commands::list_microphones,
+            crate::commands::list_cameras,
             crate::commands::start_recording,
             crate::commands::stop_recording,
             crate::commands::reveal_in_folder,

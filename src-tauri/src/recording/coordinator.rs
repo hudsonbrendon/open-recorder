@@ -19,10 +19,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::capture::audio_capture::AudioCapture;
 use crate::capture::video_capture::VideoCapture;
+use crate::capture::webcam_capture::{self, WebcamCapture};
 use crate::capture::{ffmpeg, finalizer};
 use crate::capture::input_recorder::InputRecorder;
 use crate::capture::input::InputListener;
 use crate::model::source::CaptureSource;
+use crate::zoom::store;
 
 #[derive(serde::Serialize, Clone, PartialEq, Debug)]
 pub struct RecordingResult {
@@ -45,6 +47,14 @@ struct Active {
     /// Real encoded dimensions from VideoCapture::dimensions().
     video_dims: (u32, u32),
     input: InputRecorder,
+    /// Webcam capture, if a camera_id was provided and started successfully.
+    webcam: Option<WebcamCapture>,
+    /// Path where the webcam video is written (derived from out_video).
+    webcam_out: PathBuf,
+    /// Whether the webcam started successfully.
+    webcam_was_started: bool,
+    /// Human-readable camera name (for metadata).
+    camera_name: Option<String>,
 }
 
 #[derive(Default)]
@@ -90,6 +100,7 @@ impl Coordinator {
         &mut self,
         source: CaptureSource,
         mic_id: Option<String>,
+        camera_id: Option<String>,
         fps: u32,
     ) -> Result<(), String> {
         ffmpeg::ensure_ffmpeg()?;
@@ -128,6 +139,28 @@ impl Coordinator {
 
         let input = InputRecorder::new(source.rect, start_ms);
 
+        // Optional webcam capture. Degrade gracefully on error — a webcam failure
+        // must never prevent the main screen recording from starting.
+        let webcam_out = store::webcam_path(out_video.to_str().unwrap_or_default());
+        let (webcam, webcam_was_started, camera_name) = if let Some(ref id) = camera_id {
+            // Look up the human-readable name from the device list.
+            let cam_name = webcam_capture::list_cameras()
+                .into_iter()
+                .find(|(cid, _)| cid == id)
+                .map(|(_, name)| name)
+                .unwrap_or_else(|| id.clone());
+
+            match WebcamCapture::start(id, fps, &webcam_out) {
+                Ok(wc) => (Some(wc), true, Some(cam_name)),
+                Err(e) => {
+                    eprintln!("[coordinator] webcam start failed (degrading): {e}");
+                    (None, false, None)
+                }
+            }
+        } else {
+            (None, false, None)
+        };
+
         // Native input capture (mouse-only on macOS via CGEventTap; rdev elsewhere).
         // The listener is spawned once per process and reused across recordings.
         if self.input.is_none() {
@@ -150,6 +183,10 @@ impl Coordinator {
             audio,
             video_dims,
             input,
+            webcam,
+            webcam_out,
+            webcam_was_started,
+            camera_name,
         });
         Ok(())
     }
@@ -172,6 +209,13 @@ impl Coordinator {
         if let Some(ref l) = self.input {
             l.set_recording(false);
             l.drain(&mut a.input);
+        }
+
+        // Stop webcam alongside video/audio (best-effort — degraded recording is ok).
+        if let Some(wc) = a.webcam.take() {
+            if let Err(e) = wc.stop() {
+                eprintln!("[coordinator] webcam stop error (non-fatal): {e}");
+            }
         }
 
         // Stop captures; clean up temp files if either fails.
@@ -227,6 +271,9 @@ impl Coordinator {
         // Override: use real frame dimensions, not source.rect which is 0 for windows.
         meta.recording.width = a.video_dims.0;
         meta.recording.height = a.video_dims.1;
+        // Webcam: has_webcam is true only if the capture started AND the output file exists.
+        meta.recording.has_webcam = a.webcam_was_started && a.webcam_out.exists();
+        meta.recording.camera_name = a.camera_name.clone();
 
         finalizer::write_metadata(&meta, &a.out_meta).map_err(|e| e.to_string())?;
 
