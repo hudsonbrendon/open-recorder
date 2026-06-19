@@ -1,6 +1,7 @@
 use std::process::{Command, Stdio};
 use std::fs;
 use crate::model::zoom::ZoomModel;
+use crate::model::webcam::WebcamOverlay;
 use crate::capture::ffmpeg::{ffmpeg_binary, ffprobe_binary};
 
 /// Build the zoompan filter expressions for z (scale), x and y (pan).
@@ -32,12 +33,6 @@ pub fn build_zoompan_expr(model: &ZoomModel, fps: u32) -> (String, String, Strin
         let eout = seg.ease_out_ms as f64 / 1000.0;
         let dur = s1 - s0;
         let scale = seg.scale;
-        // t = on/fps (time in seconds for this output frame)
-        // smoothstep(p) = p*p*(3-2*p) with p clamped to [0,1] via min/max
-        // We use min(1,max(0,p)) instead of clip() for portability.
-        // Ease-in ramp: p = (t-s0)/ein
-        // Ease-out ramp: p = (s1-t)/eout
-        // Plateau (middle): ramp factor = 1
         z.push_str(&format!(
             "if(between(on/{fps_f},{s0},{s1}),1+({scale}-1)*if(lt(on/{fps_f}-{s0},{ein}),(min(1,max(0,(on/{fps_f}-{s0})/{ein})))*(min(1,max(0,(on/{fps_f}-{s0})/{ein})))*(3-2*(min(1,max(0,(on/{fps_f}-{s0})/{ein})))),if(gt(on/{fps_f}-{s0},{dur}-{eout}),(min(1,max(0,({s1}-on/{fps_f})/{eout})))*(min(1,max(0,({s1}-on/{fps_f})/{eout})))*(3-2*(min(1,max(0,({s1}-on/{fps_f})/{eout})))),1)),"
         ));
@@ -48,15 +43,9 @@ pub fn build_zoompan_expr(model: &ZoomModel, fps: u32) -> (String, String, Strin
         z.push(')');
     }
 
-    // Build x and y center expressions (first target per segment, default 0.5)
     let cx_expr = center_expr(model, fps, true);
     let cy_expr = center_expr(model, fps, false);
 
-    // Clamp the raw center c to [0.5/zoom, 1-0.5/zoom] (scale-dependent, matches preview).
-    // This mirrors the Rust zoom_at / TS zoomAt: m = 0.5/scale_t; cx = clamp(tx, m, 1-m).
-    // zoompan's `zoom` variable holds the current eased scale for this frame.
-    // x = iw * clamp(cx, 0.5/zoom, 1-0.5/zoom) - (iw/zoom)/2
-    // y = ih * clamp(cy, 0.5/zoom, 1-0.5/zoom) - (ih/zoom)/2
     let x = format!("iw*max(0.5/zoom,min({cx_expr},1-0.5/zoom))-(iw/zoom/2)");
     let y = format!("ih*max(0.5/zoom,min({cy_expr},1-0.5/zoom))-(ih/zoom/2)");
 
@@ -83,10 +72,49 @@ fn center_expr(model: &ZoomModel, fps: u32, is_x: bool) -> String {
     e
 }
 
+/// Build the webcam overlay portion of a filter_complex string.
+///
+/// Produces:
+///   `[1:v]scale=SxS,<hflip,>format=rgba,<mask>[fg];[bg][fg]overlay=X:Y:format=auto[outv]`
+///
+/// - Scale webcam input to SxS (from geometry)
+/// - Apply hflip only when mirror is true
+/// - Convert to rgba for alpha transparency support
+/// - Apply circle mask via geq alpha expression
+/// - Overlay [fg] onto [bg] at computed X,Y
+pub fn build_overlay_filter(ov: &WebcamOverlay, out_w: u32, out_h: u32) -> String {
+    let (s, x, y) = ov.geometry(out_w, out_h);
+    let hflip = if ov.mirror { "hflip," } else { "" };
+    let r = s / 2;
+
+    let mask = match ov.shape.as_str() {
+        "rounded" => {
+            let rad = (s as f64 * 0.15) as u32;
+            format!(
+                "geq=lum='p(X,Y)':a='if(gt(min(min(X,{w}-1-X),min(Y,{h}-1-Y)),{rad}),255,if(lte(hypot(max({rad}-X,0)+max(X-({w}-1-{rad}),0),max({rad}-Y,0)+max(Y-({h}-1-{rad}),0)),{rad}),255,0))'",
+                w = s, h = s, rad = rad
+            )
+        }
+        _ => {
+            // Circle mask: alpha=255 inside radius r, 0 outside
+            format!(
+                "geq=lum='p(X,Y)':a='if(lte(hypot(X-{r},Y-{r}),{r}),255,0)'"
+            )
+        }
+    };
+
+    format!(
+        "[1:v]scale={s}:{s},{hflip}format=rgba,{mask}[fg];[bg][fg]overlay={x}:{y}:format=auto[outv]"
+    )
+}
+
 /// Export a video applying zoompan filter with progress reporting.
 ///
 /// `on_progress` is called with values in [0.0, 1.0] as encoding proceeds.
 /// The zoompan filter preserves frame dimensions (probed via ffprobe).
+///
+/// When model.webcam is Some(enabled) and the companion webcam file exists,
+/// the export composites the webcam as a circle overlay via filter_complex.
 ///
 /// Note: `d=1` ensures zoompan does not hold/duplicate frames; input and
 /// output FPS remain the same as the source.
@@ -118,12 +146,34 @@ pub fn export<F: FnMut(f64)>(
         "iw:ih".to_string()
     };
 
+    // Parse out_w and out_h for webcam overlay geometry
+    let (out_w, out_h) = if dims.contains('x') {
+        let parts: Vec<&str> = dims.splitn(2, 'x').collect();
+        if parts.len() == 2 {
+            let w = parts[0].trim().parse::<u32>().unwrap_or(1280);
+            let h = parts[1].trim().parse::<u32>().unwrap_or(720);
+            (w, h)
+        } else {
+            (1280, 720)
+        }
+    } else {
+        (1280, 720)
+    };
+
     let (z, x, y) = build_zoompan_expr(model, fps);
     // d=1: output exactly as many frames as input (no frame holding)
     // s=WxH: keep original resolution
-    let vf = format!(
+    let zoompan = format!(
         "zoompan=z='{z}':x='{x}':y='{y}':d=1:fps={fps}:s={size_arg}"
     );
+
+    // Check if we have an enabled webcam overlay with existing webcam file
+    let webcam_file = crate::zoom::store::webcam_path(video_path);
+    let use_webcam = model.webcam
+        .as_ref()
+        .filter(|ov| ov.enabled)
+        .is_some()
+        && webcam_file.exists();
 
     // Capture stderr to a temp file so we can include it in error messages
     // without risking a deadlock between stdout progress reads and stderr draining.
@@ -131,23 +181,52 @@ pub fn export<F: FnMut(f64)>(
     let stderr_file = fs::File::create(&stderr_path)
         .map_err(|e| format!("não foi possível criar arquivo de stderr temporário: {e}"))?;
 
-    let mut child = Command::new(ffmpeg_binary())
-        .args([
-            "-y",
-            "-i", video_path,
-            "-vf", &vf,
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-pix_fmt", "yuv420p",
-            "-c:a", "copy",
-            "-progress", "pipe:1",
-            "-nostats",
-            out_path,
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::from(stderr_file))
-        .spawn()
-        .map_err(|e| format!("falha ao iniciar ffmpeg: {e}"))?;
+    let mut child = if use_webcam {
+        let ov = model.webcam.as_ref().unwrap();
+        let overlay_filter = build_overlay_filter(ov, out_w, out_h);
+        // filter_complex: zoompan labels its output [bg]; webcam overlay produces [outv]
+        let filter_complex = format!("{zoompan}[bg];{overlay_filter}");
+        let webcam_str = webcam_file.to_string_lossy().into_owned();
+
+        Command::new(ffmpeg_binary())
+            .args([
+                "-y",
+                "-i", video_path,
+                "-i", &webcam_str,
+                "-filter_complex", &filter_complex,
+                "-map", "[outv]",
+                "-map", "0:a?",
+                "-c:v", "libx264",
+                "-preset", "fast",
+                "-pix_fmt", "yuv420p",
+                "-c:a", "copy",
+                "-progress", "pipe:1",
+                "-nostats",
+                out_path,
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::from(stderr_file))
+            .spawn()
+            .map_err(|e| format!("falha ao iniciar ffmpeg: {e}"))?
+    } else {
+        Command::new(ffmpeg_binary())
+            .args([
+                "-y",
+                "-i", video_path,
+                "-vf", &zoompan,
+                "-c:v", "libx264",
+                "-preset", "fast",
+                "-pix_fmt", "yuv420p",
+                "-c:a", "copy",
+                "-progress", "pipe:1",
+                "-nostats",
+                out_path,
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::from(stderr_file))
+            .spawn()
+            .map_err(|e| format!("falha ao iniciar ffmpeg: {e}"))?
+    };
 
     if let Some(out) = child.stdout.take() {
         use std::io::{BufRead, BufReader};
@@ -184,7 +263,8 @@ pub fn export<F: FnMut(f64)>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::zoom::{ZoomSegment, ZoomTarget};
+    use crate::model::zoom::{ZoomModel, ZoomSegment, ZoomTarget};
+    use crate::model::webcam::WebcamOverlay;
 
     #[test]
     fn builds_zoompan_expr_for_one_segment() {
@@ -201,19 +281,14 @@ mod tests {
             webcam: None,
         };
         let (z, x, y) = build_zoompan_expr(&m, 30);
-        // Expression uses on/fps for time
         assert!(z.contains("on/30"), "z should use on/30 for time: {z}");
-        // Contains the plateau scale of the segment
         assert!(z.contains("2"), "z should contain scale 2: {z}");
-        // x and y reference input dimensions
         assert!(x.contains("iw"), "x should reference iw: {x}");
         assert!(y.contains("ih"), "y should reference ih: {y}");
-        // x and y clamp center using scale-dependent bounds (matches preview)
         assert!(x.contains("0.5/zoom"), "x should clamp with 0.5/zoom: {x}");
         assert!(x.contains("1-0.5/zoom"), "x should clamp with 1-0.5/zoom: {x}");
         assert!(y.contains("0.5/zoom"), "y should clamp with 0.5/zoom: {y}");
         assert!(y.contains("1-0.5/zoom"), "y should clamp with 1-0.5/zoom: {y}");
-        // Default case (outside all segments) produces 1
         assert!(z.contains("1"), "z should fall back to 1: {z}");
     }
 
@@ -249,10 +324,8 @@ mod tests {
             webcam: None,
         };
         let (z, x, y) = build_zoompan_expr(&m, 30);
-        // Both scales appear
         assert!(z.contains("1.5"), "z should contain 1.5: {z}");
         assert!(z.contains("3"), "z should contain 3: {z}");
-        // Both center coords appear in x and y
         assert!(x.contains("0.3"), "x should contain 0.3: {x}");
         assert!(x.contains("0.6"), "x should contain 0.6: {x}");
         assert!(y.contains("0.4"), "y should contain 0.4: {y}");
@@ -261,8 +334,6 @@ mod tests {
 
     #[test]
     fn segment_with_empty_targets_does_not_panic() {
-        // A ZoomSegment deserialized from malformed frontend JSON may have targets: [].
-        // build_zoompan_expr must not panic; it should fall back to 0.5 center.
         let m = ZoomModel {
             version: 1,
             segments: vec![ZoomSegment {
@@ -276,11 +347,27 @@ mod tests {
             webcam: None,
         };
         let (z, x, y) = build_zoompan_expr(&m, 30);
-        // Should produce a valid expression string without panicking.
         assert!(!z.is_empty(), "z expression should be non-empty");
-        // x and y should fall back to 0.5 center (no target coordinates appear).
         assert!(x.contains("0.5"), "x should use 0.5 fallback center: {x}");
         assert!(y.contains("0.5"), "y should use 0.5 fallback center: {y}");
+    }
+
+    #[test]
+    fn overlay_filter_circle_has_terms() {
+        let ov = WebcamOverlay::default_overlay(); // circle, mirror=true
+        let f = build_overlay_filter(&ov, 1920, 1080);
+        assert!(f.contains("scale="), "{f}");
+        assert!(f.contains("hflip"), "{f}");      // mirror on
+        assert!(f.contains("geq"), "{f}");        // circle mask via geq alpha
+        assert!(f.contains("overlay="), "{f}");
+    }
+
+    #[test]
+    fn overlay_filter_no_mirror_omits_hflip() {
+        let mut ov = WebcamOverlay::default_overlay();
+        ov.mirror = false;
+        let f = build_overlay_filter(&ov, 1920, 1080);
+        assert!(!f.contains("hflip"), "{f}");
     }
 
     // Smoke render test — requires ffmpeg at /opt/homebrew/bin/ffmpeg.
@@ -288,7 +375,6 @@ mod tests {
     #[test]
     #[ignore]
     fn export_smoke_render() {
-        // Generate test input
         let gen_status = Command::new("/opt/homebrew/bin/ffmpeg")
             .args([
                 "-y", "-f", "lavfi",
@@ -327,8 +413,61 @@ mod tests {
         assert!(result.is_ok(), "export should succeed: {:?}", result);
         assert!(last_progress >= 0.99, "progress should reach ~1.0, got {last_progress}");
 
-        // Verify output exists and is non-empty
         let meta = std::fs::metadata("/tmp/f2out.mp4").expect("output should exist");
         assert!(meta.len() > 1000, "output should be non-trivially large");
+    }
+
+    /// Render validation test for webcam overlay compositing.
+    /// Requires ffmpeg at /opt/homebrew/bin/ffmpeg and creates test videos at /tmp/scr.mp4 and /tmp/scr.webcam.mp4
+    /// Run: cargo test test_export_webcam_overlay_render -- --ignored
+    #[test]
+    #[ignore]
+    fn test_export_webcam_overlay_render() {
+        // Create test screen recording
+        let scr_status = Command::new("/opt/homebrew/bin/ffmpeg")
+            .args([
+                "-y", "-f", "lavfi",
+                "-i", "testsrc=size=1280x720:rate=30",
+                "-t", "2",
+                "-c:v", "libx264",
+                "-pix_fmt", "yuv420p",
+                "/tmp/scr.mp4",
+            ])
+            .status()
+            .expect("ffmpeg should be available");
+        assert!(scr_status.success(), "screen test video creation failed");
+
+        // webcam_path("/tmp/scr.mp4") -> "/tmp/scr.webcam.mp4"
+        let cam_status = Command::new("/opt/homebrew/bin/ffmpeg")
+            .args([
+                "-y", "-f", "lavfi",
+                "-i", "testsrc2=size=640x480:rate=30",
+                "-t", "2",
+                "-c:v", "libx264",
+                "-pix_fmt", "yuv420p",
+                "/tmp/scr.webcam.mp4",
+            ])
+            .status()
+            .expect("ffmpeg should be available");
+        assert!(cam_status.success(), "webcam test video creation failed");
+
+        let model = ZoomModel {
+            version: 1,
+            segments: vec![],
+            webcam: Some(WebcamOverlay::default_overlay()),
+        };
+
+        let result = export(
+            "/tmp/scr.mp4",
+            &model,
+            "/tmp/scrout.mp4",
+            30,
+            2000,
+            |_| {},
+        );
+        assert!(result.is_ok(), "export with webcam overlay should succeed: {:?}", result);
+
+        let meta = std::fs::metadata("/tmp/scrout.mp4").expect("output /tmp/scrout.mp4 should exist");
+        assert!(meta.len() > 1000, "output should be non-trivially large, got {} bytes", meta.len());
     }
 }
