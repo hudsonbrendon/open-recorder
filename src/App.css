@@ -1,0 +1,155 @@
+:root {
+  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+  font-weight: 400;
+  color: #0f0f0f;
+  background-color: #f6f6f6;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color: #f6f6f6;
+    background-color: #1a1a1a;
+  }
+}
+
+.app {
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 2rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+h1 {
+  font-size: 1.4rem;
+  margin: 0 0 0.5rem;
+}
+
+h2 {
+  font-size: 1rem;
+  margin: 0;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.field span {
+  font-size: 0.85rem;
+  font-weight: 600;
+  opacity: 0.7;
+}
+
+.field select {
+  padding: 0.4rem 0.6rem;
+  border-radius: 6px;
+  border: 1px solid #ccc;
+  font-size: 0.95rem;
+  font-family: inherit;
+  background: inherit;
+  color: inherit;
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.btn {
+  padding: 0.5rem 1.2rem;
+  border-radius: 6px;
+  border: none;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.btn.record {
+  background: #e53e3e;
+  color: #fff;
+}
+
+.btn.record:hover {
+  background: #c53030;
+}
+
+.btn.record:disabled {
+  background: #999;
+  cursor: not-allowed;
+}
+
+.btn.stop {
+  background: #4a4a4a;
+  color: #fff;
+}
+
+.btn.stop:hover {
+  background: #2d2d2d;
+}
+
+.btn.small {
+  padding: 0.25rem 0.7rem;
+  font-size: 0.8rem;
+  background: #e2e8f0;
+  color: #1a1a1a;
+}
+
+.btn.small:hover {
+  background: #cbd5e0;
+}
+
+.timer {
+  font-family: monospace;
+  font-size: 1.1rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+}
+
+.muted {
+  opacity: 0.55;
+  font-size: 0.85rem;
+}
+
+.error {
+  color: #e53e3e;
+  font-size: 0.9rem;
+}
+
+hr {
+  border: none;
+  border-top: 1px solid #ddd;
+  margin: 0.5rem 0;
+}
+
+.recordings {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.recordings li {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.recordings li span:first-child {
+  flex: 1;
+  font-size: 0.9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
