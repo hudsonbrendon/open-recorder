@@ -14,6 +14,10 @@ pub struct RecordingInfo {
     pub height: u32,
     pub fps: u32,
     pub duration_ms: u64,
+    #[serde(default)]
+    pub has_webcam: bool,
+    #[serde(default)]
+    pub camera_name: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -43,7 +47,7 @@ mod tests {
     fn serializes_snake_case_with_type_field() {
         let meta = RecordingMetadata {
             version: 1,
-            recording: RecordingInfo { width: 2560, height: 1440, fps: 30, duration_ms: 18450 },
+            recording: RecordingInfo { width: 2560, height: 1440, fps: 30, duration_ms: 18450, has_webcam: false, camera_name: None },
             source: SourceInfo { kind: "display".into(), id: "1".into(), rect: [0, 0, 2560, 1440] },
             events: vec![
                 InputEvent { t_ms: 1200, kind: "click".into(), x: 840, y: 410, button: Some("left".into()) },
@@ -61,12 +65,20 @@ mod tests {
     fn round_trip_preserves_values() {
         let meta = RecordingMetadata {
             version: 1,
-            recording: RecordingInfo { width: 100, height: 200, fps: 60, duration_ms: 5000 },
+            recording: RecordingInfo { width: 100, height: 200, fps: 60, duration_ms: 5000, has_webcam: false, camera_name: None },
             source: SourceInfo { kind: "window".into(), id: "abc".into(), rect: [10, 20, 30, 40] },
             events: vec![InputEvent { t_ms: 0, kind: "click".into(), x: 1, y: 2, button: Some("right".into()) }],
         };
         let json = serde_json::to_string(&meta).unwrap();
         let back: RecordingMetadata = serde_json::from_str(&json).unwrap();
         assert_eq!(meta, back);
+    }
+
+    #[test]
+    fn recording_info_defaults_webcam_fields() {
+        let json = r#"{"width":100,"height":50,"fps":30,"duration_ms":1000}"#;
+        let r: RecordingInfo = serde_json::from_str(json).unwrap();
+        assert!(!r.has_webcam);
+        assert!(r.camera_name.is_none());
     }
 }

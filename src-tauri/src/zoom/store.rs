@@ -8,6 +8,11 @@ pub fn zoom_path(video_path: &str) -> PathBuf {
     p.with_extension("zoom.json")
 }
 
+pub fn webcam_path(video_path: &str) -> PathBuf {
+    let p = Path::new(video_path);
+    p.with_extension("webcam.mp4")
+}
+
 pub fn load(video_path: &str) -> Option<ZoomModel> {
     let path = zoom_path(video_path);
     let txt = std::fs::read_to_string(path).ok()?;
@@ -29,6 +34,11 @@ mod tests {
     fn zoom_path_swaps_extension() {
         let p = zoom_path("/x/REC-123.mp4");
         assert_eq!(p, PathBuf::from("/x/REC-123.zoom.json"));
+    }
+
+    #[test]
+    fn webcam_path_swaps_suffix() {
+        assert_eq!(webcam_path("/x/REC-1.mp4"), PathBuf::from("/x/REC-1.webcam.mp4"));
     }
 
     #[test]
