@@ -43,6 +43,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 1.25rem;
+  overflow-x: hidden;
 }
 
 .recorder-head {
@@ -131,11 +132,12 @@ body {
 /* ===== Device pills (mic / camera) ===== */
 .pills {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 0.6rem;
 }
 
 .pill {
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
@@ -172,7 +174,11 @@ body {
   font-size: 0.85rem;
   font-weight: 600;
   flex: 1;
+  min-width: 0;
   text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .pill-switch {
@@ -408,6 +414,7 @@ body {
 }
 
 .dd-btn-label {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
