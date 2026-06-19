@@ -103,15 +103,19 @@ Manual verification checklist for the webcam overlay feature (F3) on macOS. Foll
 
 - [ ] Close the editor (back to recording list)
 - [ ] Verify that the `REC-<timestamp>.zoom.json` file includes a `webcam` field:
-  - Should contain overlay config: position (x, y), size (width, height), shape (circle/rounded), border (width, color), mirror (true/false)
+  - Should contain overlay config: scale (`s`), position (`x`, `y`) — all as fractions 0..1 — shape (circle/rounded), border (width, color), mirror (true/false), and enabled flag
   - Example:
     ```json
     {
       "segments": [...],
       "webcam": {
-        "geometry": { "s": 0.1, "x": 0.85, "y": 0.1 },
+        "enabled": true,
         "shape": "circle",
-        "border": { "width": 2, "color": "#ffffff" },
+        "x": 0.85,
+        "y": 0.1,
+        "s": 0.1,
+        "border_width": 2,
+        "border_color": "#ffffff",
         "mirror": true
       }
     }
@@ -146,9 +150,10 @@ Manual verification checklist for the webcam overlay feature (F3) on macOS. Foll
 ## Test 11: Compare Preview vs. Exported Overlay
 
 - [ ] Still in editor with the exported file ready:
-- [ ] Play exported MP4 side-by-side with the live preview:
-  - Pause preview at a known frame
-  - Verify exported video shows the **same overlay position** and **size** at that timestamp
+- [ ] Play the exported `.mp4` file and scrub the editor preview to the **same timestamp**, then compare the overlay position/size/shape:
+  - In the exported video, pause at a known frame (e.g., 5 seconds)
+  - In the editor preview, drag the playhead to the same timestamp (5 seconds)
+  - Verify the overlay appears at the **same position** and **size** in both
   - Verify **mirror state matches** in both
 - [ ] Repeat for 2–3 different timestamps
 - [ ] Confirm preview and export are **visually consistent**

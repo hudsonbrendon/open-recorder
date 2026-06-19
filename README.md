@@ -22,7 +22,10 @@ An open-source, cross-platform screen recorder built with **Tauri 2** (Rust core
 - Bubble controls: position (drag), size (resize), shape toggle, border customization, mirror toggle
 - Non-destructive overlay config saved in `REC-<timestamp>.zoom.json` (`webcam` field)
 - Composited export via ffmpeg (webcam overlay baked on top of screen recording)
-- Known limitation: Export border approximation; overlay does not zoom with auto-zoom segments
+- **Known limitations:**
+  - Webcam overlay border is shown in the editor preview but NOT baked into the export (preview/export divergence).
+  - The 'rounded' overlay shape mask in the export is an approximation of the editor preview.
+  - The webcam overlay stays fixed and does NOT zoom together with the screen (by design).
 
 **Roadmap:**
 - **F4:** 9:16 export + Instagram/TikTok preview
