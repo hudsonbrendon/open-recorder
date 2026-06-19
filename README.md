@@ -6,9 +6,28 @@ An open-source, cross-platform screen recorder built with **Tauri 2** (Rust core
 
 **Foundation (F1):** Screen/window/region capture + microphone + click/mouse event logging.
 
+**F2 (implemented — pending manual smoke validation):** Auto-zoom on click + integrated editor with timeline, live preview, and landscape export with zoom baked in.
+- Click detection via native macOS CGEventTap (requires Input Monitoring/Accessibility permission)
+- Auto-zoom segments generated from click events
+- Timeline UI with segment bars, click markers, and playhead
+- Live preview with CSS transform zoom + pan
+- Segment inspector for scale/timing adjustments
+- Export via ffmpeg zoompan filter with progress tracking
+- Edit persistence via REC-<timestamp>.zoom.json
+
+**F3 (implemented — pending manual smoke validation):** Webcam overlay with separate capture, editor bubble controls, and composited export.
+- Separate webcam capture via nokhwa (recorded to `REC-<timestamp>.webcam.mp4`)
+- Camera selection dropdown with "Nenhuma" (none) option; degrades gracefully if Camera permission denied
+- Editor bubble (circle or rounded-rect) with live preview of selected camera feed
+- Bubble controls: position (drag), size (resize), shape toggle, border customization, mirror toggle
+- Non-destructive overlay config saved in `REC-<timestamp>.zoom.json` (`webcam` field)
+- Composited export via ffmpeg (webcam overlay baked on top of screen recording)
+- **Known limitations:**
+  - Webcam overlay border is shown in the editor preview but NOT baked into the export (preview/export divergence).
+  - The 'rounded' overlay shape mask in the export is an approximation of the editor preview.
+  - The webcam overlay stays fixed and does NOT zoom together with the screen (by design).
+
 **Roadmap:**
-- **F2:** Auto-zoom on click + integrated mini editor
-- **F3:** Webcam overlay
 - **F4:** 9:16 export + Instagram/TikTok preview
 
 ## Features
@@ -30,12 +49,14 @@ An open-source, cross-platform screen recorder built with **Tauri 2** (Rust core
 The app gracefully degrades if permissions are not granted:
 - **Screen Recording:** Required to capture video. Without it, recording fails with an error.
 - **Microphone:** Required to record audio. Without it, recordings proceed with video only (no audio track).
-- **Input Monitoring** (Accessibility): Required to log mouse clicks and movements. Without it, videos and audio still record; events array remains empty (no error).
+- **Input Monitoring** (Accessibility): Required to log mouse clicks and movements AND to enable auto-zoom on click in F2. Without it, videos and audio still record; events array remains empty and F2 auto-zoom segments are not generated (manual zoom add still available).
+- **Camera** (F3): Required to record webcam and create the overlay bubble in the editor. Without it, the app degrades gracefully: camera selector shows no options, recordings proceed without webcam capture, and overlay is not available.
 
 Grant permissions in **System Preferences > Privacy & Security**:
 1. Screen Recording: Add the Tauri app
 2. Microphone: Enable
 3. Accessibility: Add the Tauri app
+4. Camera: Add the Tauri app (F3 webcam overlay)
 
 ## Installation & Setup
 
@@ -129,8 +150,12 @@ Recordings are saved to **`~/Movies/OpenRecorder/`** (macOS):
 
 - **Non-Primary Display:** Recordings on secondary displays may fall back to the primary display. Workaround: use Full Screen capture of primary, or record a window instead.
 - **Window Geometry:** Window-only capture is best-effort. Partially off-screen windows will be clipped to available area.
-- **Click Event Precision:** Event coordinates are currently coarse and may serve as placeholders; F2 will refine with precise pixel-level click zones.
+- **Click event coordinates:** Resolved in F2 — real pixel coordinates captured via the native macOS event tap.
 - **ffmpeg Bundling:** The app requires `ffmpeg` on PATH. Bundled sidecar is planned for distribution phase.
+
+## Known Limitations (F2)
+
+- **Auto-zoom click targeting (capture source):** Auto-zoom click targeting is accurate for **full-screen primary-display capture only**. For window or region capture sources the `source.rect` can be `[0, 0, 0, 0]` and the native CGEventTap reports global screen coordinates, so the auto-zoom focus point may not align with the correct location in the captured frame. Full-screen primary display capture is the supported and tested path for F2 auto-zoom.
 
 ## Troubleshooting
 
@@ -160,7 +185,10 @@ ffmpeg -version
 
 ## Testing
 
-Run the **smoke test checklist** in `/docs/SMOKE-TEST.md` to verify capture, audio, metadata, and event logging on your macOS system.
+Run the smoke test checklists on your macOS system:
+- **F1 (Foundation):** [/docs/SMOKE-TEST.md](./docs/SMOKE-TEST.md) — Verify capture, audio, metadata, and event logging
+- **F2 (Auto-Zoom + Editor):** [/docs/SMOKE-TEST-F2.md](./docs/SMOKE-TEST-F2.md) — Verify editor, auto-zoom segments, timeline, live preview, export, and persistence
+- **F3 (Webcam Overlay):** [/docs/SMOKE-TEST-F3.md](./docs/SMOKE-TEST-F3.md) — Verify webcam capture, camera selection, editor bubble controls, overlay persistence, and composited export
 
 ## License
 
@@ -173,5 +201,7 @@ Contributions are welcome. Please open an issue or PR on GitHub.
 ---
 
 **Links:**
-- [Smoke Test Checklist](./docs/SMOKE-TEST.md)
+- [F1 Smoke Test Checklist](./docs/SMOKE-TEST.md)
+- [F2 Smoke Test Checklist](./docs/SMOKE-TEST-F2.md)
+- [F3 Smoke Test Checklist](./docs/SMOKE-TEST-F3.md)
 - [GitHub Issues](https://github.com/your-org/open-recorder/issues)

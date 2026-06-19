@@ -1,155 +1,563 @@
 :root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  font-size: 16px;
+  --bg: #16161a;
+  --bg-2: #1d1d23;
+  --card: #202027;
+  --card-2: #26262e;
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.16);
+  --text: #e8e8ec;
+  --muted: rgba(255, 255, 255, 0.52);
+  --accent: #6366f1;
+  --accent-2: #3b82f6;
+  --rec: #ef4444;
+  --rec-hover: #dc2626;
+
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  font-size: 15px;
   line-height: 1.5;
-  font-weight: 400;
-  color: #0f0f0f;
-  background-color: #f6f6f6;
+  color: var(--text);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f6f6f6;
-    background-color: #1a1a1a;
-  }
+* {
+  box-sizing: border-box;
 }
 
-.app {
-  max-width: 480px;
+html,
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    radial-gradient(120% 80% at 50% -10%, #25252e 0%, rgba(37, 37, 46, 0) 60%),
+    linear-gradient(180deg, var(--bg-2) 0%, var(--bg) 100%);
+  background-attachment: fixed;
+}
+
+/* ===== Recorder main screen ===== */
+.recorder {
+  max-width: 440px;
   margin: 0 auto;
-  padding: 2rem 1.5rem;
+  padding: 1.5rem 1.25rem 2rem;
   display: flex;
   flex-direction: column;
-  gap: 1rem;
+  gap: 1.25rem;
+  overflow-x: hidden;
 }
 
-h1 {
-  font-size: 1.4rem;
-  margin: 0 0 0.5rem;
+.recorder-head {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.25rem 0.25rem 0;
 }
 
-h2 {
-  font-size: 1rem;
+.recorder-head h1 {
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
   margin: 0;
 }
 
-.field {
+.brand-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--rec);
+  box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.18);
+}
+
+.recorder-card {
+  background: linear-gradient(180deg, var(--card-2) 0%, var(--card) 100%);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 1.1rem;
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  gap: 1rem;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
 }
 
-.field span {
+.ctl-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+/* ===== Source segment + dropdown ===== */
+.source-select {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  margin-top: -0.4rem;
+}
+
+.seg {
+  display: inline-flex;
+  align-self: flex-start;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 3px;
+  gap: 2px;
+}
+
+.seg-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
   font-size: 0.85rem;
   font-weight: 600;
-  opacity: 0.7;
+  padding: 0.3rem 0.9rem;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
 }
 
-.field select {
-  padding: 0.4rem 0.6rem;
-  border-radius: 6px;
-  border: 1px solid #ccc;
-  font-size: 0.95rem;
-  font-family: inherit;
-  background: inherit;
-  color: inherit;
+.seg-btn:hover {
+  color: var(--text);
 }
 
-.controls {
+.seg-btn.active {
+  background: var(--accent-2);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.35);
+}
+
+/* ===== Device pills (mic / camera) ===== */
+.pills {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0.6rem;
+}
+
+.pill {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  background: rgba(0, 0, 0, 0.18);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.6rem;
+  transition: border-color 0.15s ease, opacity 0.15s ease;
+}
+
+.pill.off {
+  opacity: 0.6;
+}
+
+.pill-head {
   display: flex;
   align-items: center;
-  gap: 1rem;
-}
-
-.btn {
-  padding: 0.5rem 1.2rem;
-  border-radius: 6px;
+  gap: 0.45rem;
+  background: transparent;
   border: none;
-  font-size: 0.95rem;
-  font-weight: 600;
+  color: inherit;
+  font: inherit;
   cursor: pointer;
-  font-family: inherit;
+  padding: 0;
+  width: 100%;
 }
 
-.btn.record {
-  background: #e53e3e;
+.pill-icon {
+  font-size: 0.95rem;
+  line-height: 1;
+}
+
+.pill-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pill-switch {
+  width: 30px;
+  height: 18px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  position: relative;
+  flex: none;
+  transition: background 0.15s ease;
+}
+
+.pill-switch.on {
+  background: #22c55e;
+}
+
+.pill-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.15s ease;
+}
+
+.pill-switch.on .pill-knob {
+  transform: translateX(12px);
+}
+
+/* ===== Record button ===== */
+.record-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.9rem;
+  padding-top: 0.2rem;
+}
+
+.record-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.65rem 1.6rem;
+  border: none;
+  border-radius: 999px;
+  background: var(--rec);
   color: #fff;
+  font: inherit;
+  font-size: 0.98rem;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(239, 68, 68, 0.32);
+  transition: transform 0.12s ease, background 0.15s ease, box-shadow 0.15s ease;
 }
 
-.btn.record:hover {
-  background: #c53030;
+.record-btn:hover:not(:disabled) {
+  background: var(--rec-hover);
+  transform: translateY(-1px);
 }
 
-.btn.record:disabled {
-  background: #999;
+.record-btn:disabled {
+  background: #44444c;
+  color: rgba(255, 255, 255, 0.5);
+  box-shadow: none;
   cursor: not-allowed;
 }
 
-.btn.stop {
-  background: #4a4a4a;
-  color: #fff;
+.record-btn.recording {
+  background: #3a3a42;
+  box-shadow: none;
 }
 
-.btn.stop:hover {
-  background: #2d2d2d;
+.record-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #fff;
 }
 
-.btn.small {
-  padding: 0.25rem 0.7rem;
-  font-size: 0.8rem;
-  background: #e2e8f0;
-  color: #1a1a1a;
+.record-btn.recording .record-dot {
+  border-radius: 2px;
+  animation: pulse 1.4s ease-in-out infinite;
 }
 
-.btn.small:hover {
-  background: #cbd5e0;
+@keyframes pulse {
+  50% {
+    opacity: 0.4;
+  }
 }
 
-.timer {
-  font-family: monospace;
-  font-size: 1.1rem;
+.record-timer {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 1.05rem;
   font-weight: 600;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.04em;
+  color: var(--rec);
 }
 
-.muted {
-  opacity: 0.55;
-  font-size: 0.85rem;
+/* ===== Recordings ===== */
+.recordings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
 }
 
-.error {
-  color: #e53e3e;
-  font-size: 0.9rem;
+.section-title {
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin: 0 0.25rem;
 }
 
-hr {
-  border: none;
-  border-top: 1px solid #ddd;
-  margin: 0.5rem 0;
+.rec-empty {
+  color: var(--muted);
+  font-size: 0.88rem;
+  margin: 0 0.25rem;
 }
 
-.recordings {
-  list-style: none;
-  margin: 0;
-  padding: 0;
+.rec-list {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
 }
 
-.recordings li {
+.rec-card {
   display: flex;
   align-items: center;
   gap: 0.75rem;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.6rem 0.75rem;
+  transition: border-color 0.15s ease, transform 0.12s ease;
 }
 
-.recordings li span:first-child {
+.rec-card:hover {
+  border-color: var(--line-strong);
+  transform: translateY(-1px);
+}
+
+.rec-thumb {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  background: rgba(99, 102, 241, 0.18);
+  color: #a5b4fc;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+
+.rec-meta {
   flex: 1;
-  font-size: 0.9rem;
+  min-width: 0;
+}
+
+.rec-name {
+  font-size: 0.88rem;
+  font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.rec-dur {
+  font-size: 0.75rem;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.rec-actions {
+  display: flex;
+  gap: 0.4rem;
+  flex: none;
+}
+
+.ghost-btn {
+  appearance: none;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 0.32rem 0.7rem;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.ghost-btn:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.ghost-btn.primary {
+  border-color: transparent;
+  background: var(--accent);
+  color: #fff;
+}
+
+.ghost-btn.primary:hover {
+  background: #5457e6;
+}
+
+/* ===== Custom dropdown (shared with editor pickers) ===== */
+.dd {
+  position: relative;
+}
+
+.dd-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 0.7rem;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.22);
+  color: inherit;
+  font-size: 0.9rem;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.dd-btn:hover {
+  border-color: var(--line-strong);
+}
+
+.dd-btn-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dd-caret {
+  opacity: 0.6;
+  margin-left: 0.5rem;
+  font-size: 0.7rem;
+}
+
+.dd-menu {
+  position: absolute;
+  z-index: 50;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  padding: 0.25rem;
+  max-height: 280px;
+  overflow-y: auto;
+  background: #26262e;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.55);
+}
+
+.dd-group-label {
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.5;
+  padding: 0.45rem 0.6rem 0.2rem;
+}
+
+.dd-empty {
+  padding: 0.3rem 0.6rem;
+  opacity: 0.4;
+  font-size: 0.85rem;
+}
+
+.dd-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0.6rem;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 0.88rem;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.dd-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.dd-item.selected {
+  background: var(--accent-2);
+  color: #fff;
+}
+
+.dd-check {
+  width: 1em;
+  flex: none;
+  text-align: center;
+}
+
+.dd-item-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ===== Shared / editor classes (kept) ===== */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.field span {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.btn {
+  padding: 0.5rem 1.1rem;
+  border-radius: 8px;
+  border: none;
+  font-size: 0.92rem;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  background: var(--card-2);
+  color: var(--text);
+}
+
+.btn:hover {
+  background: #2f2f38;
+}
+
+.btn.small {
+  padding: 0.3rem 0.75rem;
+  font-size: 0.82rem;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--text);
+}
+
+.btn.small:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.timer {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.error {
+  color: #f87171;
+  font-size: 0.9rem;
+  margin: 0 0.25rem;
+}
+
+.editor {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+hr {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 0.5rem 0;
 }

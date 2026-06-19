@@ -1,14 +1,18 @@
 import type { MicOption } from "../lib/api";
+import { Dropdown } from "./Dropdown";
 
 export function MicPicker(props: {
   mics: MicOption[]; value: string | null; onChange: (id: string) => void;
 }) {
   return (
-    <label className="field">
+    <div className="field">
       <span>Microfone</span>
-      <select value={props.value ?? ""} onChange={(e) => props.onChange(e.target.value)}>
-        {props.mics.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-      </select>
-    </label>
+      <Dropdown
+        value={props.value}
+        onChange={props.onChange}
+        placeholder="Selecionar microfone..."
+        groups={[{ options: props.mics.map((m) => ({ id: m.id, label: m.name })) }]}
+      />
+    </div>
   );
 }

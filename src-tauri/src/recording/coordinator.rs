@@ -1,5 +1,5 @@
 // RecordingCoordinator: wires VideoCapture, AudioCapture, InputRecorder, ffmpeg mux,
-// and rdev global input listener into a single start/stop lifecycle.
+// and a native input listener into a single start/stop lifecycle.
 //
 // Dims-override note: VideoCapture::dimensions() returns the REAL encoded
 // frame size (queried from scap at start time). For window sources source.rect
@@ -7,41 +7,30 @@
 // After build_metadata() we overwrite recording.width and recording.height with
 // the stashed dims before writing the file.
 //
-// rdev::listen note: rdev::listen is GLOBAL and BLOCKING. It can only be called
-// once per process. We spawn it once in a background thread the first time start()
-// is called, and gate event ingestion via a shared AtomicBool flag. The thread
-// cannot be cleanly joined (rdev does not expose a stop handle), so we leave it
-// parked but idle when recording stops. Events are forwarded via a channel to an
-// Arc<Mutex<Option<InputRecorder>>> that the coordinator owns.
+// Input capture: on macOS we use a CGEventTap (mouse-only; avoids the crash caused
+// by rdev calling main-thread-only Text Services APIs from a background thread).
+// On other platforms rdev is used. The listener is spawned once per process the
+// first time start() is called and kept alive between recordings, gated by an
+// AtomicBool flag.
 
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::capture::audio_capture::AudioCapture;
 use crate::capture::video_capture::VideoCapture;
+use crate::capture::webcam_capture::{self, WebcamCapture};
 use crate::capture::{ffmpeg, finalizer};
 use crate::capture::input_recorder::InputRecorder;
+use crate::capture::input::InputListener;
 use crate::model::source::CaptureSource;
+use crate::zoom::store;
 
 #[derive(serde::Serialize, Clone, PartialEq, Debug)]
 pub struct RecordingResult {
     pub video_path: String,
     pub metadata_path: String,
     pub duration_ms: u64,
-}
-
-/// Shared state between the rdev listener thread and the Coordinator.
-/// The listener sends (x, y, kind, button, now_ms) tuples via channel.
-type InputMsg = (i64, i64, String, Option<String>, u64);
-
-struct RdevHandle {
-    /// Set to true while a recording is active; the listener thread checks this.
-    recording: Arc<AtomicBool>,
-    /// Receiver for input events from the listener thread.
-    rx: mpsc::Receiver<InputMsg>,
 }
 
 struct Active {
@@ -58,13 +47,21 @@ struct Active {
     /// Real encoded dimensions from VideoCapture::dimensions().
     video_dims: (u32, u32),
     input: InputRecorder,
+    /// Webcam capture, if a camera_id was provided and started successfully.
+    webcam: Option<WebcamCapture>,
+    /// Path where the webcam video is written (derived from out_video).
+    webcam_out: PathBuf,
+    /// Whether the webcam started successfully.
+    webcam_was_started: bool,
+    /// Human-readable camera name (for metadata).
+    camera_name: Option<String>,
 }
 
 #[derive(Default)]
 pub struct Coordinator {
     active: Option<Active>,
-    /// rdev listener is spawned once per process; stored here after first start().
-    rdev: Option<RdevHandle>,
+    /// Native input listener — spawned once per process on first start().
+    input: Option<InputListener>,
 }
 
 fn now_ms() -> u64 {
@@ -98,57 +95,12 @@ fn output_dir() -> PathBuf {
     dir
 }
 
-/// Spawn the rdev listen thread (called at most once per process).
-/// Returns an RdevHandle containing the recording flag and event receiver.
-/// Currently unused: rdev's listener crashes on modern macOS (see start()).
-/// Retained for the upcoming native mouse-only event tap replacement.
-#[allow(dead_code)]
-fn spawn_rdev_listener() -> RdevHandle {
-    let recording = Arc::new(AtomicBool::new(false));
-    let (tx, rx) = mpsc::channel::<InputMsg>();
-
-    let recording_clone = recording.clone();
-    std::thread::spawn(move || {
-        // rdev::listen is blocking and cannot be stopped; we gate via the flag.
-        let _ = rdev::listen(move |event: rdev::Event| {
-            if !recording_clone.load(Ordering::Relaxed) {
-                return;
-            }
-            let now = now_ms();
-            match event.event_type {
-                rdev::EventType::MouseMove { x, y } => {
-                    let _ = tx.send((x as i64, y as i64, "move".to_string(), None, now));
-                }
-                rdev::EventType::ButtonPress(btn) => {
-                    let label = match btn {
-                        rdev::Button::Left => "left",
-                        rdev::Button::Right => "right",
-                        rdev::Button::Middle => "middle",
-                        rdev::Button::Unknown(_) => "unknown",
-                    };
-                    // NOTE: rdev ButtonPress carries no coordinates; (0,0) is a placeholder until correlated with the last MouseMove.
-                    let _ = tx.send((0, 0, "click".to_string(), Some(label.to_string()), now));
-                }
-                _ => {}
-            }
-        });
-    });
-
-    RdevHandle { recording, rx }
-}
-
-/// Drain all pending messages from the rdev channel into the InputRecorder.
-fn drain_rdev(handle: &RdevHandle, input: &mut InputRecorder) {
-    while let Ok((x, y, kind, button, now_ms)) = handle.rx.try_recv() {
-        input.ingest(x, y, &kind, button, now_ms);
-    }
-}
-
 impl Coordinator {
     pub fn start(
         &mut self,
         source: CaptureSource,
         mic_id: Option<String>,
+        camera_id: Option<String>,
         fps: u32,
     ) -> Result<(), String> {
         ffmpeg::ensure_ffmpeg()?;
@@ -187,13 +139,36 @@ impl Coordinator {
 
         let input = InputRecorder::new(source.rect, start_ms);
 
-        // NOTE: rdev's global listener is DISABLED. On macOS 14+/26 rdev's
-        // listen thread crashes the process (it calls main-thread-only Text
-        // Services APIs from a background thread when decoding keyboard events,
-        // tripping a libdispatch queue assertion). Click capture will be
-        // reintroduced via a mouse-only native event tap. Until then `events`
-        // is empty — video + audio recording is unaffected (graceful
-        // degradation).
+        // Optional webcam capture. Degrade gracefully on error — a webcam failure
+        // must never prevent the main screen recording from starting.
+        let webcam_out = store::webcam_path(out_video.to_str().unwrap_or_default());
+        let (webcam, webcam_was_started, camera_name) = if let Some(ref id) = camera_id {
+            // Look up the human-readable name from the device list.
+            let cam_name = webcam_capture::list_cameras()
+                .into_iter()
+                .find(|(cid, _)| cid == id)
+                .map(|(_, name)| name)
+                .unwrap_or_else(|| id.clone());
+
+            match WebcamCapture::start(id, fps, &webcam_out) {
+                Ok(wc) => (Some(wc), true, Some(cam_name)),
+                Err(e) => {
+                    eprintln!("[coordinator] webcam start failed (degrading): {e}");
+                    (None, false, None)
+                }
+            }
+        } else {
+            (None, false, None)
+        };
+
+        // Native input capture (mouse-only on macOS via CGEventTap; rdev elsewhere).
+        // The listener is spawned once per process and reused across recordings.
+        if self.input.is_none() {
+            self.input = Some(InputListener::start());
+        }
+        if let Some(ref l) = self.input {
+            l.set_recording(true);
+        }
 
         self.active = Some(Active {
             source,
@@ -208,6 +183,10 @@ impl Coordinator {
             audio,
             video_dims,
             input,
+            webcam,
+            webcam_out,
+            webcam_was_started,
+            camera_name,
         });
         Ok(())
     }
@@ -226,10 +205,17 @@ impl Coordinator {
             let _ = std::fs::remove_file(atmp);
         };
 
-        // Disable rdev ingestion and drain remaining messages.
-        if let Some(ref h) = self.rdev {
-            h.recording.store(false, Ordering::Relaxed);
-            drain_rdev(h, &mut a.input);
+        // Disable input ingestion and drain remaining messages.
+        if let Some(ref l) = self.input {
+            l.set_recording(false);
+            l.drain(&mut a.input);
+        }
+
+        // Stop webcam alongside video/audio (best-effort — degraded recording is ok).
+        if let Some(wc) = a.webcam.take() {
+            if let Err(e) = wc.stop() {
+                eprintln!("[coordinator] webcam stop error (non-fatal): {e}");
+            }
         }
 
         // Stop captures; clean up temp files if either fails.
@@ -285,6 +271,9 @@ impl Coordinator {
         // Override: use real frame dimensions, not source.rect which is 0 for windows.
         meta.recording.width = a.video_dims.0;
         meta.recording.height = a.video_dims.1;
+        // Webcam: has_webcam is true only if the capture started AND the output file exists.
+        meta.recording.has_webcam = a.webcam_was_started && a.webcam_out.exists();
+        meta.recording.camera_name = a.camera_name.clone();
 
         finalizer::write_metadata(&meta, &a.out_meta).map_err(|e| e.to_string())?;
 

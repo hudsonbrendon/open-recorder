@@ -11,7 +11,7 @@ pub fn build_metadata(
     let [x, y, w, h] = source.rect;
     RecordingMetadata {
         version: 1,
-        recording: RecordingInfo { width: w as u32, height: h as u32, fps, duration_ms },
+        recording: RecordingInfo { width: w as u32, height: h as u32, fps, duration_ms, has_webcam: false, camera_name: None },
         source: SourceInfo { kind: source.kind.as_str().to_string(), id: source.id.clone(), rect: [x, y, w, h] },
         events,
     }
@@ -32,7 +32,7 @@ mod tests {
         let src = CaptureSource { kind: SourceKind::Display, id: "1".into(), rect: [0, 0, 1920, 1080] };
         let meta = build_metadata(&src, 30, 5000, vec![]);
         assert_eq!(meta.version, 1);
-        assert_eq!(meta.recording, RecordingInfo { width: 1920, height: 1080, fps: 30, duration_ms: 5000 });
+        assert_eq!(meta.recording, RecordingInfo { width: 1920, height: 1080, fps: 30, duration_ms: 5000, has_webcam: false, camera_name: None });
         assert_eq!(meta.source, SourceInfo { kind: "display".into(), id: "1".into(), rect: [0, 0, 1920, 1080] });
     }
 
