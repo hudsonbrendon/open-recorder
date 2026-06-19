@@ -167,13 +167,8 @@ pub fn export<F: FnMut(f64)>(
         "zoompan=z='{z}':x='{x}':y='{y}':d=1:fps={fps}:s={size_arg}"
     );
 
-    // Check if we have an enabled webcam overlay with existing webcam file
+    // Check if we have a webcam overlay file (may be disabled or missing, checked inside)
     let webcam_file = crate::zoom::store::webcam_path(video_path);
-    let use_webcam = model.webcam
-        .as_ref()
-        .filter(|ov| ov.enabled)
-        .is_some()
-        && webcam_file.exists();
 
     // Capture stderr to a temp file so we can include it in error messages
     // without risking a deadlock between stdout progress reads and stderr draining.
@@ -181,34 +176,57 @@ pub fn export<F: FnMut(f64)>(
     let stderr_file = fs::File::create(&stderr_path)
         .map_err(|e| format!("não foi possível criar arquivo de stderr temporário: {e}"))?;
 
-    let mut child = if use_webcam {
-        let ov = model.webcam.as_ref().unwrap();
-        let overlay_filter = build_overlay_filter(ov, out_w, out_h);
-        // filter_complex: zoompan labels its output [bg]; webcam overlay produces [outv]
-        let filter_complex = format!("{zoompan}[bg];{overlay_filter}");
-        let webcam_str = webcam_file.to_string_lossy().into_owned();
+    // Build ffmpeg command: with webcam overlay if enabled and file exists, otherwise screen-only.
+    let mut child = if let Some(ov) = &model.webcam {
+        if ov.enabled && webcam_file.exists() {
+            // Webcam overlay path: composite webcam onto zoompan output
+            let overlay_filter = build_overlay_filter(ov, out_w, out_h);
+            // filter_complex: zoompan labels its output [bg]; webcam overlay produces [outv]
+            let filter_complex = format!("{zoompan}[bg];{overlay_filter}");
+            let webcam_str = webcam_file.to_string_lossy().into_owned();
 
-        Command::new(ffmpeg_binary())
-            .args([
-                "-y",
-                "-i", video_path,
-                "-i", &webcam_str,
-                "-filter_complex", &filter_complex,
-                "-map", "[outv]",
-                "-map", "0:a?",
-                "-c:v", "libx264",
-                "-preset", "fast",
-                "-pix_fmt", "yuv420p",
-                "-c:a", "copy",
-                "-progress", "pipe:1",
-                "-nostats",
-                out_path,
-            ])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::from(stderr_file))
-            .spawn()
-            .map_err(|e| format!("falha ao iniciar ffmpeg: {e}"))?
+            Command::new(ffmpeg_binary())
+                .args([
+                    "-y",
+                    "-i", video_path,
+                    "-i", &webcam_str,
+                    "-filter_complex", &filter_complex,
+                    "-map", "[outv]",
+                    "-map", "0:a?",
+                    "-c:v", "libx264",
+                    "-preset", "fast",
+                    "-pix_fmt", "yuv420p",
+                    "-c:a", "copy",
+                    "-progress", "pipe:1",
+                    "-nostats",
+                    out_path,
+                ])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::from(stderr_file))
+                .spawn()
+                .map_err(|e| format!("falha ao iniciar ffmpeg: {e}"))
+        } else {
+            // Webcam overlay disabled or file missing; fall back to screen-only
+            Command::new(ffmpeg_binary())
+                .args([
+                    "-y",
+                    "-i", video_path,
+                    "-vf", &zoompan,
+                    "-c:v", "libx264",
+                    "-preset", "fast",
+                    "-pix_fmt", "yuv420p",
+                    "-c:a", "copy",
+                    "-progress", "pipe:1",
+                    "-nostats",
+                    out_path,
+                ])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::from(stderr_file))
+                .spawn()
+                .map_err(|e| format!("falha ao iniciar ffmpeg: {e}"))
+        }
     } else {
+        // No webcam configured; screen-only path
         Command::new(ffmpeg_binary())
             .args([
                 "-y",
@@ -225,8 +243,8 @@ pub fn export<F: FnMut(f64)>(
             .stdout(Stdio::piped())
             .stderr(Stdio::from(stderr_file))
             .spawn()
-            .map_err(|e| format!("falha ao iniciar ffmpeg: {e}"))?
-    };
+            .map_err(|e| format!("falha ao iniciar ffmpeg: {e}"))
+    }?;
 
     if let Some(out) = child.stdout.take() {
         use std::io::{BufRead, BufReader};
