@@ -29,6 +29,7 @@ cpal = "0.15"
 rdev = "0.5"
 thiserror = "2"
 hound = "3"
+nokhwa = { version = "0.10", features = ["input-native"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-graphics = "0.24"

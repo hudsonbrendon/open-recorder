@@ -7,3 +7,4 @@ pub mod source_enum;
 pub mod video_capture;
 pub mod audio_capture;
 pub mod finalizer;
+pub mod webcam_capture;
