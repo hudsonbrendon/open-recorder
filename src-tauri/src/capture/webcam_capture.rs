@@ -114,6 +114,10 @@ impl WebcamCapture {
                     Ok(Err(e)) => format!("falha ao iniciar stream da câmera: {e}"),
                     Ok(Ok(_)) => unreachable!(),
                 };
+                // Release any partially-initialised AVFoundation state.
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    camera.stop_stream()
+                }));
                 let _ = dim_tx.send(Err(err_msg));
                 return;
             }
@@ -155,14 +159,26 @@ impl WebcamCapture {
                         // decode_image::<RgbFormat>() converts the raw camera buffer
                         // (MJPEG / YUV / etc.) into a contiguous RGB24 ImageBuffer.
                         // .as_raw() gives a &Vec<u8> without extra allocation.
-                        match buf.decode_image::<RgbFormat>() {
-                            Ok(img) => {
+                        //
+                        // nokhwa's decoder may call mozjpeg (via FFI) for MJPEG
+                        // cameras; that C code can panic.  Wrap the entire decode in
+                        // catch_unwind so a panic becomes a clean loop break instead
+                        // of unwinding the capture thread uncaught.
+                        let decode_result = std::panic::catch_unwind(
+                            std::panic::AssertUnwindSafe(|| buf.decode_image::<RgbFormat>()),
+                        );
+                        match decode_result {
+                            Ok(Ok(img)) => {
                                 if stdin.write_all(img.as_raw()).is_err() {
                                     break;
                                 }
                             }
-                            Err(_) => {
+                            Ok(Err(_)) => {
                                 // Decoding failed for this frame; skip it.
+                            }
+                            Err(_) => {
+                                // mozjpeg / FFI panic during decode; stop cleanly.
+                                break;
                             }
                         }
                     }
