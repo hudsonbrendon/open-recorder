@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { ZoomModel } from "./zoom";
+export type { WebcamOverlay } from "./webcam";
 
 export interface SourceOption {
   id: string;
@@ -10,6 +11,11 @@ export interface SourceOption {
 }
 
 export interface MicOption {
+  id: string;
+  name: string;
+}
+
+export interface CameraOption {
   id: string;
   name: string;
 }
@@ -27,8 +33,9 @@ export interface RecordingResult {
 
 export const listSources = () => invoke<SourcesPayload>("list_sources");
 export const listMicrophones = () => invoke<MicOption[]>("list_microphones");
-export const startRecording = (source: SourceOption, micId: string | null) =>
-  invoke<void>("start_recording", { source, micId });
+export const listCameras = () => invoke<CameraOption[]>("list_cameras");
+export const startRecording = (source: SourceOption, micId: string | null, cameraId: string | null) =>
+  invoke<void>("start_recording", { source, micId, cameraId });
 export const stopRecording = () => invoke<RecordingResult>("stop_recording");
 export const revealInFolder = (path: string) => invoke<void>("reveal_in_folder", { path });
 
@@ -42,7 +49,14 @@ export interface InputEventDTO {
 
 export interface RecordingMetadata {
   version: number;
-  recording: { width: number; height: number; fps: number; duration_ms: number };
+  recording: {
+    width: number;
+    height: number;
+    fps: number;
+    duration_ms: number;
+    has_webcam: boolean;
+    camera_name?: string;
+  };
   source: { type: string; id: string; rect: [number, number, number, number] };
   events: InputEventDTO[];
 }

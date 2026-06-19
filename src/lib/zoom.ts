@@ -1,9 +1,11 @@
+import type { WebcamOverlay } from "./webcam";
+
 export interface ZoomTarget { t_ms: number; x: number; y: number }
 export interface ZoomSegment {
   start_ms: number; end_ms: number; ease_in_ms: number; ease_out_ms: number;
   scale: number; targets: ZoomTarget[];
 }
-export interface ZoomModel { version: number; segments: ZoomSegment[] }
+export interface ZoomModel { version: number; segments: ZoomSegment[]; webcam?: WebcamOverlay }
 export interface ZoomAt { scale: number; cx: number; cy: number }
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));

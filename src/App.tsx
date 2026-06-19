@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useRecorder } from "./state/useRecorder";
 import { SourcePicker } from "./components/SourcePicker";
 import { MicPicker } from "./components/MicPicker";
+import { CameraPicker } from "./components/CameraPicker";
 import { RecordControls } from "./components/RecordControls";
 import { RecordingsList } from "./components/RecordingsList";
 import { EditorView } from "./components/EditorView";
@@ -21,6 +22,7 @@ export default function App() {
       <SourcePicker displays={r.displays} windows={r.windows}
                     value={r.selectedId} onChange={r.setSelectedId} />
       <MicPicker mics={r.mics} value={r.selectedMic} onChange={r.setSelectedMic} />
+      <CameraPicker cameras={r.cameras} value={r.selectedCamera} onChange={r.setSelectedCamera} />
       <RecordControls isRecording={r.isRecording} elapsed={r.elapsed}
                       disabled={!r.selectedId} onStart={r.start} onStop={r.stop} />
       <hr />

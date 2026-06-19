@@ -5,8 +5,10 @@ export function useRecorder() {
   const [displays, setDisplays] = useState<api.SourceOption[]>([]);
   const [windows, setWindows] = useState<api.SourceOption[]>([]);
   const [mics, setMics] = useState<api.MicOption[]>([]);
+  const [cameras, setCameras] = useState<api.CameraOption[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedMic, setSelectedMic] = useState<string | null>(null);
+  const [selectedCamera, setSelectedCamera] = useState<string>("");
   const [isRecording, setRecording] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [recordings, setRecordings] = useState<api.RecordingResult[]>([]);
@@ -20,6 +22,8 @@ export function useRecorder() {
       setDisplays(s.displays); setWindows(s.windows);
       const m = await api.listMicrophones();
       setMics(m);
+      const c = await api.listCameras();
+      setCameras(c);
       if (!selectedId && s.displays[0]) setSelectedId(s.displays[0].id);
       if (!selectedMic && m[0]) setSelectedMic(m[0].id);
     } catch (e) { setError(String(e)); }
@@ -39,12 +43,12 @@ export function useRecorder() {
   const start = useCallback(async () => {
     if (!selected) return;
     try {
-      await api.startRecording(selected, selectedMic);
+      await api.startRecording(selected, selectedMic, selectedCamera || null);
       setRecording(true);
       startedAt.current = Date.now();
       timer.current = window.setInterval(() => setElapsed(Date.now() - startedAt.current), 100);
     } catch (e) { setError(String(e)); }
-  }, [selected, selectedMic]);
+  }, [selected, selectedMic, selectedCamera]);
 
   const stop = useCallback(async () => {
     try {
@@ -56,6 +60,7 @@ export function useRecorder() {
     setElapsed(0);
   }, []);
 
-  return { displays, windows, mics, selectedId, setSelectedId, selectedMic,
-           setSelectedMic, isRecording, elapsed, recordings, error, start, stop };
+  return { displays, windows, mics, cameras, selectedId, setSelectedId, selectedMic,
+           setSelectedMic, selectedCamera, setSelectedCamera,
+           isRecording, elapsed, recordings, error, start, stop };
 }
