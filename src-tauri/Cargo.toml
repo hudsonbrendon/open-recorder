@@ -35,9 +35,3 @@ nokhwa = { version = "0.10", features = ["input-native"] }
 core-graphics = "0.24"
 core-foundation = "0.10"
 
-# Pin scap's transitive windows-capture to the version it was written against.
-# scap 0.0.8 calls WCSettings::new with 5 args; windows-capture >= 1.4 takes 8
-# (E0061), so the default ^1.3.6 resolution to 1.5.x breaks the Windows build.
-[target.'cfg(target_os = "windows")'.dependencies]
-windows-capture = "=1.3.6"
-

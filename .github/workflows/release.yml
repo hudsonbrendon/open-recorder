@@ -5,6 +5,10 @@ on:
     tags:
       - "v*"
 
+# Currently macOS-only: the screen-capture backend (scap 0.0.8) does not build
+# on Windows or Linux, and the capture/window-enum/input code is gated to
+# cfg(target_os = "macos") with no fallback yet. Add other platforms back to the
+# matrix once the capture layer is ported (e.g. scap 0.1.x or a per-OS backend).
 jobs:
   build:
     name: build ${{ matrix.platform }}
@@ -16,29 +20,9 @@ jobs:
         include:
           - platform: macos-latest
             args: ""
-          - platform: ubuntu-22.04
-            args: ""
-          - platform: windows-latest
-            args: ""
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Linux deps
-        if: matrix.platform == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            libgtk-3-dev \
-            libasound2-dev \
-            libpipewire-0.3-dev \
-            libdbus-1-dev \
-            libclang-dev \
-            clang
 
       - uses: pnpm/action-setup@v4
         with:
