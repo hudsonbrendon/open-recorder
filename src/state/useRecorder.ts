@@ -10,7 +10,7 @@ export function useRecorder() {
   const [cameras, setCameras] = useState<api.CameraOption[]>([]);
   const [sourceKind, setSourceKindState] = useState<SourceKind>("display");
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [micOn, setMicOn] = useState(true);
+  const [micOn, setMicOn] = useState(false);
   const [selectedMic, setSelectedMic] = useState<string | null>(null);
   const [camOn, setCamOn] = useState(false);
   const [selectedCamera, setSelectedCamera] = useState<string | null>(null);
@@ -20,19 +20,19 @@ export function useRecorder() {
   const [error, setError] = useState<string | null>(null);
   const timer = useRef<number | null>(null);
   const startedAt = useRef<number>(0);
+  const micsTried = useRef(false);
+  const camsTried = useRef(false);
 
+  // Only sources are listed at startup — they need no permission (displays via
+  // display-info, windows via CGWindowList). Microphone (cpal) and camera
+  // (nokhwa) enumeration is deferred until the user enables that device, so the
+  // app never triggers a mic/camera permission prompt just by launching.
   const refresh = useCallback(async () => {
     try {
       const s = await api.listSources();
       setDisplays(s.displays);
       setWindows(s.windows);
-      const m = await api.listMicrophones();
-      setMics(m);
-      const c = await api.listCameras();
-      setCameras(c);
       setSelectedId((cur) => cur ?? s.displays[0]?.id ?? null);
-      setSelectedMic((cur) => cur ?? m[0]?.id ?? null);
-      setSelectedCamera((cur) => cur ?? c[0]?.id ?? null);
     } catch (e) {
       setError(String(e));
     }
@@ -41,6 +41,32 @@ export function useRecorder() {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // Lazy device enumeration on first enable (this is where the OS permission
+  // prompt appears — only when the user actually opts in to mic/camera).
+  useEffect(() => {
+    if (!micOn || micsTried.current) return;
+    micsTried.current = true;
+    api
+      .listMicrophones()
+      .then((m) => {
+        setMics(m);
+        setSelectedMic((cur) => cur ?? m[0]?.id ?? null);
+      })
+      .catch((e) => setError(String(e)));
+  }, [micOn]);
+
+  useEffect(() => {
+    if (!camOn || camsTried.current) return;
+    camsTried.current = true;
+    api
+      .listCameras()
+      .then((c) => {
+        setCameras(c);
+        setSelectedCamera((cur) => cur ?? c[0]?.id ?? null);
+      })
+      .catch((e) => setError(String(e)));
+  }, [camOn]);
 
   useEffect(
     () => () => {
